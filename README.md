@@ -45,6 +45,75 @@ Three modes depending on how much scrutiny you want:
 
 ---
 
+## The chain in practice
+
+This is the hero feature. Here is what `--panel` actually produces:
+
+```
+/rival --panel
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Qwen 3.6+  ·  Round 1 of 3  ·  no prior context                      │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │                                                                         │
+  │  [BUG-1]  Missing argument validation — if $1 is empty, the script     │
+  │           continues silently and writes garbage to the output file.    │
+  │                                                                         │
+  │  [BUG-2]  No curl timeout flag. On a hung connection this blocks       │
+  │           indefinitely with no feedback to the caller.                 │
+  │                                                                         │
+  │  [BUG-3]  Dead code: the $FALLBACK_MODEL branch on line 47 can never   │
+  │           be reached — the condition above it is always true.          │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+                    │
+                    │  Qwen findings passed to Gemma
+                    ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Gemma 3 27B  ·  Round 2 of 3  ·  reading Qwen findings               │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │                                                                         │
+  │  [CONFIRM]  BUG-1 confirmed. Agree this will silently corrupt output.  │
+  │                                                                         │
+  │  [CONFIRM]  BUG-2 confirmed. Add --max-time 30 at minimum.             │
+  │                                                                         │
+  │  [DISPUTE]  BUG-3: the dead code branch IS reachable — Qwen missed     │
+  │             that $FALLBACK_MODEL can be set externally via env.        │
+  │                                                                         │
+  │  [NEW]      Critical: set -e at the top silently kills the retry       │
+  │             loop on any non-zero curl exit. Retries only work for      │
+  │             HTTP errors (curl exit 0). Network failures kill the       │
+  │             script before any retry logic can run.                     │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+                    │
+                    │  All findings + dispute passed to Llama
+                    ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Llama 3.3 70B  ·  Round 3 of 3  ·  resolving disputes                │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │                                                                         │
+  │  VERDICT on BUG-3 dispute: Gemma is correct. The env-set path is      │
+  │  valid. Dead code finding should be withdrawn.                         │
+  │                                                                         │
+  │  PRIORITY ORDER:                                                        │
+  │  1. set -e / retry conflict (Gemma NEW) — breaks core functionality   │
+  │  2. Missing arg validation (Qwen BUG-1) — data corruption risk        │
+  │  3. No curl timeout (Qwen BUG-2) — reliability issue                  │
+  │                                                                         │
+  │  Recommendation: fix set -e first. Everything else is downstream.     │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+         ✓ Summary merged back into Claude
+           3 bugs confirmed · 1 dispute resolved · priority order given
+```
+
+This is not three separate reports you have to reconcile. It is a conversation among three reviewers who have actually read each other's work. The third model acts as arbiter. You get a verdict, not a list.
+
+---
+
 ## The chain vs parallel question
 
 This is worth explaining properly because the answer is not obvious.
@@ -56,37 +125,6 @@ Three models see the same code, independently, and you get three separate report
 ### Sequential chain review (what --panel actually does)
 
 The chain is different. Each model receives not only the code but the full findings of every model that reviewed it before. The second model reads the first model's output and responds to it — agreeing, extending, disputing. The third model reads both.
-
-```
-Your code
-    │
-    ▼
-┌───────────────────────────────┐
-│   Qwen 3.6+ (first reviewer) │
-│   No prior findings           │
-│   Focus: initial pass         │
-└───────────────┬───────────────┘
-                │ findings
-                ▼
-┌───────────────────────────────┐
-│   Gemma 3 27B (second)        │
-│   Sees: code + Qwen findings  │
-│   Focus: confirm, extend,     │
-│   dispute                     │
-└───────────────┬───────────────┘
-                │ findings + disputes
-                ▼
-┌───────────────────────────────┐
-│   Llama 3.3 70B (third)       │
-│   Sees: code + all prior      │
-│   Focus: resolve conflicts,   │
-│   surface what was missed     │
-└───────────────┬───────────────┘
-                │
-                ▼
-         Final summary
-         (merged back into Claude)
-```
 
 This mirrors how a real code review meeting works. The first reviewer says "I'm worried about the locking strategy." The second reviewer either backs that up or pushes back with evidence. The third one looks at the dispute and makes a call. The output is a conversation, not a list.
 
@@ -106,9 +144,9 @@ Parallel review is silent polling. The chain is a meeting. For adversarial revie
 /rival --panel
   │
   ├── Qwen 3.6+ ──► findings
-  ├── Gemma 3 27B ──► builds on Qwen findings
-  └── Llama 3.3 70B ──► resolves + synthesizes
-        returns chained summary
+  ├── Gemma 3 27B ──► builds on Qwen findings, disputes where wrong
+  └── Llama 3.3 70B ──► resolves disputes, prioritizes, synthesizes
+        returns chained summary with verdict
 
 /rival --panel-parallel
   │
@@ -135,7 +173,7 @@ Parallel review is silent polling. The chain is a meeting. For adversarial revie
 
 ```bash
 claude plugin marketplace add https://github.com/bambushu/rival
-claude plugin install rival@bambushu
+claude plugin install rival@bambushu-rival
 ```
 
 ### 2. Add your OpenRouter key
@@ -149,7 +187,7 @@ source ~/.zshrc
 
 ```bash
 claude plugin list
-# rival@bambushu should appear as enabled
+# rival@bambushu-rival should appear as enabled
 
 /rival
 # should prompt for a file or use the current editor context
@@ -264,7 +302,8 @@ A few things worth noting for anyone building OpenRouter-backed Claude Code plug
 2. **Large code inputs break `$()` substitution** — bash command substitution has an ARG_MAX ceiling. Feeding the curl body via stdin sidesteps this entirely. For small files it doesn't matter; for a 500-line module it does.
 3. **Sequential chain output needs structure** — early versions just concatenated model outputs. The chain only becomes useful when each model is explicitly told "here are the prior findings — address them." The prompt contract matters more than model selection.
 4. **Free tier models are rate-limited, not throttled** — you won't get degraded quality at peak times, you just get a 429. The retry logic handles this without requiring any user action.
-5. **Parallel review sounds better than it is** — three independent opinions with no synthesis forces the human to do the reconciliation work. The sequential chain shifts that work to the models, where it belongs.
+5. **`set -e` and retry loops do not mix** — `set -e` causes the script to exit immediately on any non-zero exit code, which means a retry loop only retries on HTTP errors (where curl exits 0). On network failures, curl exits non-zero and `set -e` kills the process before the retry condition is ever evaluated. We discovered this the hard way.
+6. **Parallel review sounds better than it is** — three independent opinions with no synthesis forces the human to do the reconciliation work. The sequential chain shifts that work to the models, where it belongs.
 
 ---
 
@@ -278,9 +317,17 @@ The obvious fix is to use a completely different model with no context. OpenRout
 
 The chain idea came from thinking about how actual code review works on good teams. The first reviewer does the initial pass. The second reviewer reads that first pass before looking at the code — they come in knowing what to focus on and what's already been covered. The third reviewer resolves disputes. Three reviewers who have actually talked to each other are worth more than three reviewers who submit separate reports.
 
-Building that into a bash script took about a day. Getting the prompt contracts right — so each model in the chain actually responds to prior findings rather than starting fresh — took another day.
+rival was built iteratively in a single session. Once the core was working, the first real test was running `/rival --panel` on rival's own source code.
 
-The result is something that costs nothing and tells you things Claude won't.
+The chain found real bugs:
+
+- **Qwen + Llama** (first pass): 6 issues — missing argument validation, no curl timeout, dead code on line 47, the API key appearing in `ps` output, no retry on 429, fragile response parsing
+- **Gemma** (second pass, reading Qwen's findings): confirmed most of those, disputed the dead code finding (correctly — the branch was reachable via env), and found the critical structural flaw: `set -e` at the top of the script was silently defeating the entire retry mechanism. Retries only fired on HTTP errors where curl exits 0. Any network failure caused curl to exit non-zero, and `set -e` killed the process immediately — before the retry logic could run. The retry loop looked correct and did nothing.
+- **Llama** (third pass, resolving): confirmed Gemma's dispute, set the priority order, called out the `set -e` issue as the most urgent fix.
+
+Three rounds of review. Each caught something the previous missed. All of the findings were real bugs that got fixed.
+
+Getting the prompt contracts right — so each model in the chain actually responds to prior findings rather than starting fresh — was the hardest part. The result is something that costs nothing and tells you things Claude won't.
 
 ---
 
