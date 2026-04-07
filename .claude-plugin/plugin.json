@@ -1,0 +1,11 @@
+{
+  "name": "rival",
+  "description": "Adversarial review and general task delegation via OpenRouter models (Qwen, DeepSeek, Gemma, etc.)",
+  "version": "1.0.0",
+  "license": "MIT",
+  "author": {
+    "name": "Bambushu"
+  },
+  "repository": "https://github.com/bambushu/rival",
+  "keywords": ["openrouter", "adversarial", "review", "qwen", "delegation"]
+}
