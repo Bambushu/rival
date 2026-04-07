@@ -1,6 +1,6 @@
 ---
 name: rival
-description: Adversarial code review via OpenRouter. Sends current diff or specified code to rival models for a critical second opinion. Supports --panel (sequential chain) and --panel-parallel (blind parallel) modes. Use /rival to invoke.
+description: Adversarial code review and general task delegation via OpenRouter. Smart routing: review requests get adversarial treatment, other tasks get forwarded directly. Supports --panel (sequential chain) and --panel-parallel (blind parallel) modes. Use /rival to invoke.
 user-invocable: true
 ---
 
@@ -15,13 +15,19 @@ Get a critical second opinion from structurally different model families.
    - If there are uncommitted changes: run `git diff` to get the current diff
    - If neither: ask the user what to review
 
-2. **Check for panel mode.** If the user passed `--panel` or `--panel-parallel`:
+2. **Detect intent.** Determine if the user wants:
+   - **Review mode** (default when no clear intent): adversarial code review — proceed to step 3 (panel check)
+   - **Task mode**: general delegation — the user asked rival to help with a task, answer a question, implement something, or do non-review work. In this case, forward the user's request directly to rival-rescue agent (Agent tool with `subagent_type: "rival:rival-rescue"`) WITHOUT the adversarial system prompt. Just pass the user's request as-is. Do not wrap it in a review prompt.
+
+   Signals for task mode: "help with", "do", "implement", "fix", "build", "answer", "explain", "outstanding tasks", "use rival for", or any request that is clearly not about reviewing existing code.
+
+3. **Check for panel mode.** If the user passed `--panel` or `--panel-parallel`:
    - `--panel` (or `--panel N`): sequential chained review (default, recommended)
    - `--panel-parallel` (or `--panel-parallel N`): blind parallel review (faster, less deep)
    - Default panel size is 3 models if no number given
    - Jump to the appropriate Panel Mode section below
 
-3. **Send to rival model (single mode).** Use the rival-rescue agent (Agent tool with `subagent_type: "rival:rival-rescue"`) with this prompt structure:
+4. **Send to rival model (single mode).** Use the rival-rescue agent (Agent tool with `subagent_type: "rival:rival-rescue"`) with this prompt structure:
 
    ```
    Review this code as an adversarial critic. Your job is to find problems, not praise.
@@ -40,7 +46,7 @@ Get a critical second opinion from structurally different model families.
    [THE CODE/DIFF]
    ```
 
-4. **Present the findings.** Show the rival model's response with a header indicating which model reviewed it.
+5. **Present the findings.** Show the rival model's response with a header indicating which model reviewed it.
 
 ## Panel Mode (sequential chained multi-model review)
 

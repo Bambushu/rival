@@ -12,7 +12,17 @@ command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not insta
 
 # Source env if key not already set (fixes subagent inheritance)
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  # Try login shell
   OPENROUTER_API_KEY=$(bash -lc 'echo "$OPENROUTER_API_KEY"' 2>/dev/null) || true
+fi
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  # Try sourcing common dotfiles directly
+  for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.profile" "$HOME/.env"; do
+    if [[ -f "$f" ]] && grep -q OPENROUTER_API_KEY "$f" 2>/dev/null; then
+      OPENROUTER_API_KEY=$(grep 'OPENROUTER_API_KEY' "$f" | head -1 | sed 's/.*=["'"'"']\{0,1\}//' | sed 's/["'"'"']\{0,1\}$//')
+      [[ -n "$OPENROUTER_API_KEY" ]] && break
+    fi
+  done
 fi
 
 MODEL="qwen/qwen3.6-plus:free"
