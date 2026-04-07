@@ -86,6 +86,12 @@ body=$(jq -n \
     "max_tokens": 16384
   }')
 
+# Write auth header to temp file (keeps API key out of ps output)
+auth_config=$(mktemp)
+trap 'rm -f "$auth_config"' EXIT
+printf -- '-H "Authorization: Bearer %s"\n' "${OPENROUTER_API_KEY}" > "$auth_config"
+chmod 600 "$auth_config"
+
 # Call OpenRouter with retry logic for transient failures
 attempt=0
 while true; do
@@ -93,7 +99,7 @@ while true; do
 
   response=$(curl -s --connect-timeout 10 --max-time 120 -w "\n%{http_code}" \
     -X POST "https://openrouter.ai/api/v1/chat/completions" \
-    -H "Authorization: Bearer ${OPENROUTER_API_KEY}" \
+    -K "$auth_config" \
     -H "Content-Type: application/json" \
     -H "HTTP-Referer: https://github.com/bambushu/rival" \
     -H "X-Title: rival-plugin" \
