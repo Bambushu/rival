@@ -1,0 +1,21 @@
+{
+  "name": "bambushu-rival",
+  "owner": {
+    "name": "Bambushu"
+  },
+  "metadata": {
+    "description": "Adversarial code review via OpenRouter models",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "rival",
+      "description": "Adversarial review and task delegation via OpenRouter models (Qwen, Gemma, Llama, etc.)",
+      "version": "1.0.0",
+      "author": {
+        "name": "Bambushu"
+      },
+      "source": "."
+    }
+  ]
+}
