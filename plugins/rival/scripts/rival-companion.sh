@@ -28,8 +28,9 @@ fi
 MODEL="qwen/qwen3.6-plus:free"
 SYSTEM_PROMPT=""
 TASK_TEXT=""
-MAX_RETRIES=3
-RETRY_DELAY=2
+MAX_RETRIES=6
+BASE_DELAY=2
+RATE_LIMIT_BASE=15
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -94,10 +95,14 @@ chmod 600 "$auth_config"
 
 # Call OpenRouter with retry logic for transient failures
 attempt=0
+headers_file=$(mktemp)
+trap 'rm -f "$headers_file"' EXIT
+
 while true; do
   attempt=$((attempt + 1))
 
   response=$(curl -s --connect-timeout 10 --max-time 120 -w "\n%{http_code}" \
+    -D "$headers_file" \
     -X POST "https://openrouter.ai/api/v1/chat/completions" \
     -K "$auth_config" \
     -H "Content-Type: application/json" \
@@ -112,9 +117,9 @@ while true; do
   # Guard: if http_code isn't numeric, curl failed entirely
   if ! [[ "$http_code" =~ ^[0-9]+$ ]]; then
     if [[ "$attempt" -lt "$MAX_RETRIES" ]]; then
-      echo "Curl failed (attempt $attempt/$MAX_RETRIES), retrying in ${RETRY_DELAY}s..." >&2
-      sleep "$RETRY_DELAY"
-      RETRY_DELAY=$((RETRY_DELAY * 2))
+      delay=$((BASE_DELAY * (2 ** (attempt - 1))))
+      echo "Curl failed (attempt $attempt/$MAX_RETRIES), retrying in ${delay}s..." >&2
+      sleep "$delay"
       continue
     fi
     echo "Error: curl failed after $attempt attempts (no HTTP status received)" >&2
@@ -124,8 +129,18 @@ while true; do
   # Retry on 429 (rate limit) or 503 (service unavailable)
   if [[ "$http_code" -eq 429 || "$http_code" -eq 503 ]]; then
     if [[ "$attempt" -lt "$MAX_RETRIES" ]]; then
-      sleep "$RETRY_DELAY"
-      RETRY_DELAY=$((RETRY_DELAY * 2))
+      # Check Retry-After header (seconds or HTTP-date — we handle seconds)
+      retry_after=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | head -1 | tr -d '\r' | awk '{print $2}')
+      if [[ "$retry_after" =~ ^[0-9]+$ ]] && [[ "$retry_after" -gt 0 ]]; then
+        delay=$((retry_after + 1))  # add 1s safety margin
+      else
+        # Exponential backoff with higher base for rate limits
+        delay=$((RATE_LIMIT_BASE * (2 ** (attempt - 1))))
+        # Cap at 120s
+        [[ "$delay" -gt 120 ]] && delay=120
+      fi
+      echo "Rate limited (HTTP $http_code, attempt $attempt/$MAX_RETRIES), waiting ${delay}s..." >&2
+      sleep "$delay"
       continue
     fi
   fi
