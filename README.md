@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <strong>Adversarial code review and task delegation — powered by free OpenRouter models.</strong><br>
+  <strong>Adversarial code review and task delegation - powered by free OpenRouter models.</strong><br>
   One model reviews your code. Three models chain their findings. Zero cost.
 </p>
 
@@ -28,20 +28,52 @@ Code review inside the same conversation context is not really review. Claude ha
 
 Three modes depending on how much scrutiny you want:
 
-**Single** — one model, fast, honest second opinion:
+**Single** - one model, fast, honest second opinion:
 ```
 /rival
 ```
 
-**Panel** — three models in a chain, each building on the last:
+**Panel** - three models in a chain, each building on the last:
 ```
 /rival --panel
 ```
 
-**Parallel** — three models blind, results merged:
+**Parallel** - three models blind, results merged:
 ```
 /rival --panel-parallel
 ```
+
+---
+
+## Dynamic model discovery
+
+rival automatically finds the best available free models on OpenRouter. No hardcoded model IDs that break when OpenRouter changes their roster.
+
+### How it works
+
+1. **Discover** - queries OpenRouter's model API, filters for `:free` models with 32k+ context
+2. **Rank** - sorts by parameter count (bigger = better reasoning for code review)
+3. **Diversify** - ensures panel models come from different families (nvidia, openai, google, meta, qwen)
+4. **Health-check** - pings top candidates with a real request, drops any that 429
+5. **Cache** - writes survivors to `~/.rival/models.json`, valid for 24 hours
+
+Discovery runs automatically when the cache is missing or stale. You can also trigger it manually:
+
+```
+/rival --discover
+```
+
+### What typically gets selected
+
+The free-tier landscape changes, but as of writing the discovery process usually selects models like:
+
+| Rank | Example model | Why |
+|------|--------------|-----|
+| #1 | Nemotron 120B or GPT-OSS 120B | Largest available, most capable |
+| #2 | Next largest from a different family | Different perspective |
+| #3 | Gemma 4 31B or similar | Third family, still strong |
+
+You never need to think about this. rival picks the best available models automatically.
 
 ---
 
@@ -52,62 +84,58 @@ This is the hero feature. Here is what `--panel` actually produces:
 ```
 /rival --panel
 
-  ┌─────────────────────────────────────────────────────────────────────────┐
-  │  Qwen 3.6+  ·  Round 1 of 3  ·  no prior context                      │
-  ├─────────────────────────────────────────────────────────────────────────┤
-  │                                                                         │
-  │  [BUG-1]  Missing argument validation — if $1 is empty, the script     │
-  │           continues silently and writes garbage to the output file.    │
-  │                                                                         │
-  │  [BUG-2]  No curl timeout flag. On a hung connection this blocks       │
-  │           indefinitely with no feedback to the caller.                 │
-  │                                                                         │
-  │  [BUG-3]  Dead code: the $FALLBACK_MODEL branch on line 47 can never   │
-  │           be reached — the condition above it is always true.          │
-  │                                                                         │
-  └─────────────────────────────────────────────────────────────────────────┘
-                    │
-                    │  Qwen findings passed to Gemma
-                    ▼
-  ┌─────────────────────────────────────────────────────────────────────────┐
-  │  Gemma 3 27B  ·  Round 2 of 3  ·  reading Qwen findings               │
-  ├─────────────────────────────────────────────────────────────────────────┤
-  │                                                                         │
-  │  [CONFIRM]  BUG-1 confirmed. Agree this will silently corrupt output.  │
-  │                                                                         │
-  │  [CONFIRM]  BUG-2 confirmed. Add --max-time 30 at minimum.             │
-  │                                                                         │
-  │  [DISPUTE]  BUG-3: the dead code branch IS reachable — Qwen missed     │
-  │             that $FALLBACK_MODEL can be set externally via env.        │
-  │                                                                         │
-  │  [NEW]      Critical: set -e at the top silently kills the retry       │
-  │             loop on any non-zero curl exit. Retries only work for      │
-  │             HTTP errors (curl exit 0). Network failures kill the       │
-  │             script before any retry logic can run.                     │
-  │                                                                         │
-  └─────────────────────────────────────────────────────────────────────────┘
-                    │
-                    │  All findings + dispute passed to Llama
-                    ▼
-  ┌─────────────────────────────────────────────────────────────────────────┐
-  │  Llama 3.3 70B  ·  Round 3 of 3  ·  resolving disputes                │
-  ├─────────────────────────────────────────────────────────────────────────┤
-  │                                                                         │
-  │  VERDICT on BUG-3 dispute: Gemma is correct. The env-set path is      │
-  │  valid. Dead code finding should be withdrawn.                         │
-  │                                                                         │
-  │  PRIORITY ORDER:                                                        │
-  │  1. set -e / retry conflict (Gemma NEW) — breaks core functionality   │
-  │  2. Missing arg validation (Qwen BUG-1) — data corruption risk        │
-  │  3. No curl timeout (Qwen BUG-2) — reliability issue                  │
-  │                                                                         │
-  │  Recommendation: fix set -e first. Everything else is downstream.     │
-  │                                                                         │
-  └─────────────────────────────────────────────────────────────────────────┘
-                    │
-                    ▼
-         ✓ Summary merged back into Claude
-           3 bugs confirmed · 1 dispute resolved · priority order given
+  +-----------------------------------------------------------------------+
+  |  Model #1  .  Round 1 of 3  .  no prior context                       |
+  +-----------------------------------------------------------------------+
+  |                                                                         |
+  |  [BUG-1]  Missing argument validation - if $1 is empty, the script    |
+  |           continues silently and writes garbage to the output file.    |
+  |                                                                         |
+  |  [BUG-2]  No curl timeout flag. On a hung connection this blocks      |
+  |           indefinitely with no feedback to the caller.                 |
+  |                                                                         |
+  |  [BUG-3]  Dead code: the $FALLBACK_MODEL branch on line 47 can never  |
+  |           be reached - the condition above it is always true.          |
+  |                                                                         |
+  +-----------------------------------------------------------------------+
+                    |
+                    |  Findings passed to Model #2 (10s spacing)
+                    v
+  +-----------------------------------------------------------------------+
+  |  Model #2  .  Round 2 of 3  .  reading prior findings                  |
+  +-----------------------------------------------------------------------+
+  |                                                                         |
+  |  [CONFIRM]  BUG-1 confirmed. Agree this will silently corrupt output.  |
+  |                                                                         |
+  |  [CONFIRM]  BUG-2 confirmed. Add --max-time 30 at minimum.             |
+  |                                                                         |
+  |  [DISPUTE]  BUG-3: the dead code branch IS reachable - first model     |
+  |             missed that $FALLBACK_MODEL can be set externally via env. |
+  |                                                                         |
+  |  [NEW]      Critical: set -e at the top silently kills the retry       |
+  |             loop on any non-zero curl exit.                            |
+  |                                                                         |
+  +-----------------------------------------------------------------------+
+                    |
+                    |  All findings + dispute passed to Model #3 (10s spacing)
+                    v
+  +-----------------------------------------------------------------------+
+  |  Model #3  .  Round 3 of 3  .  resolving disputes                      |
+  +-----------------------------------------------------------------------+
+  |                                                                         |
+  |  VERDICT on BUG-3 dispute: Model #2 is correct. The env-set path is   |
+  |  valid. Dead code finding should be withdrawn.                         |
+  |                                                                         |
+  |  PRIORITY ORDER:                                                        |
+  |  1. set -e / retry conflict - breaks core functionality                |
+  |  2. Missing arg validation - data corruption risk                      |
+  |  3. No curl timeout - reliability issue                                |
+  |                                                                         |
+  +-----------------------------------------------------------------------+
+                    |
+                    v
+         Summary merged back into Claude
+           3 bugs confirmed . 1 dispute resolved . priority order given
 ```
 
 This is not three separate reports you have to reconcile. It is a conversation among three reviewers who have actually read each other's work. The third model acts as arbiter. You get a verdict, not a list.
@@ -116,19 +144,15 @@ This is not three separate reports you have to reconcile. It is a conversation a
 
 ## The chain vs parallel question
 
-This is worth explaining properly because the answer is not obvious.
-
 ### Parallel review (what most people expect)
 
-Three models see the same code, independently, and you get three separate reports. You then have to read all three and figure out what matters. Disagreements are invisible — you just get three opinions with no synthesis. If two models miss the same bug, you learn nothing from the third seeing it.
+Three models see the same code, independently, and you get three separate reports. You then have to read all three and figure out what matters. Disagreements are invisible.
 
 ### Sequential chain review (what --panel actually does)
 
-The chain is different. Each model receives not only the code but the full findings of every model that reviewed it before. The second model reads the first model's output and responds to it — agreeing, extending, disputing. The third model reads both.
+The chain is different. Each model receives not only the code but the full findings of every model that reviewed it before. The second model reads the first model's output and responds to it - agreeing, extending, disputing. The third model reads both.
 
-This mirrors how a real code review meeting works. The first reviewer says "I'm worried about the locking strategy." The second reviewer either backs that up or pushes back with evidence. The third one looks at the dispute and makes a call. The output is a conversation, not a list.
-
-Parallel review is silent polling. The chain is a meeting. For adversarial review specifically, you want the meeting.
+This mirrors how a real code review meeting works. Parallel review is silent polling. The chain is a meeting. For adversarial review specifically, you want the meeting.
 
 ---
 
@@ -136,23 +160,24 @@ Parallel review is silent polling. The chain is a meeting. For adversarial revie
 
 ```
 /rival
-  │
-  └── single model (Qwen 3.6+)
+  |
+  +-- best available model (auto-selected)
         reviews your current file or selection
         returns findings directly
 
 /rival --panel
-  │
-  ├── Qwen 3.6+ ──► findings
-  ├── Gemma 3 27B ──► builds on Qwen findings, disputes where wrong
-  └── Llama 3.3 70B ──► resolves disputes, prioritizes, synthesizes
+  |
+  +-- Model #1 --> findings
+  +-- Model #2 --> builds on prior findings, disputes where wrong
+  +-- Model #3 --> resolves disputes, prioritizes, synthesizes
         returns chained summary with verdict
+        (10s spacing between models for free-tier rate limits)
 
 /rival --panel-parallel
-  │
-  ├── Qwen 3.6+ ─────┐
-  ├── Gemma 3 27B ────┤ blind, simultaneous
-  └── Llama 3.3 70B ──┘
+  |
+  +-- Model #1 --+
+  +-- Model #2 --| independent, spaced 10s apart
+  +-- Model #3 --+
         merged: consensus / unique findings / disagreements
 ```
 
@@ -161,9 +186,10 @@ Parallel review is silent polling. The chain is a meeting. For adversarial revie
 ## Requirements
 
 - **Claude Code** v2.1.80+
-- **OpenRouter API key** — free at [openrouter.ai](https://openrouter.ai)
+- **OpenRouter API key** - free at [openrouter.ai](https://openrouter.ai)
 - **jq** (`brew install jq`)
 - **curl**
+- **python3** (for timing during discovery health checks)
 
 ---
 
@@ -203,13 +229,13 @@ claude plugin list
 /rival
 ```
 
-Reviews the current file or selection using Qwen 3.6+ (default). Returns findings inline.
+Reviews the current file or selection using the best available free model. Returns findings inline.
 
 ### Override the model
 
 ```
-/rival --model google/gemma-3-27b-it:free
-/rival --model meta-llama/llama-3.3-70b-instruct:free
+/rival --model nvidia/nemotron-3-super-120b-a12b:free
+/rival --model google/gemma-4-31b-it:free
 ```
 
 Any model from the OpenRouter free tier works here.
@@ -220,7 +246,7 @@ Any model from the OpenRouter free tier works here.
 /rival --panel
 ```
 
-Runs Qwen → Gemma → Llama in sequence. Each model receives prior findings. Returns a synthesized summary with disputed points flagged.
+Runs three models in sequence with 10s spacing. Each model receives prior findings. Returns a synthesized summary with disputed points flagged.
 
 ### Parallel panel review
 
@@ -228,10 +254,18 @@ Runs Qwen → Gemma → Llama in sequence. Each model receives prior findings. R
 /rival --panel-parallel
 ```
 
-Runs all three models blind, in parallel. Results merged into:
-- **Consensus** — all models flagged this
-- **Unique** — only one model flagged this
-- **Disagreements** — models reached opposite conclusions
+Runs three models independently (spaced, not simultaneous - free tier requires it). Results merged into:
+- **Consensus** - all models flagged this
+- **Unique** - only one model flagged this
+- **Disagreements** - models reached opposite conclusions
+
+### Refresh model roster
+
+```
+/rival --discover
+```
+
+Manually re-runs model discovery. Useful after OpenRouter adds new free models.
 
 ### Task delegation via rival-rescue
 
@@ -245,31 +279,42 @@ Use this anywhere Claude Code accepts agent calls.
 
 ---
 
-## Available free models
+## Rate limit handling
 
-| Model | ID | Best for |
-|-------|----|----------|
-| Qwen 3.6+ (default) | `qwen/qwen3.6-plus:free` | General review, fast |
-| Qwen 3 Coder | `qwen/qwen3-coder:free` | Code-heavy review |
-| Gemma 3 27B | `google/gemma-3-27b-it:free` | Instruction following, clarity |
-| Llama 3.3 70B | `meta-llama/llama-3.3-70b-instruct:free` | Reasoning, synthesis |
-| Nemotron 120B | `nvidia/nemotron-3-super-120b-a12b:free` | Deep analysis, complex tasks |
-| Hermes 3 405B | `nousresearch/hermes-3-llama-3.1-405b:free` | High-stakes review |
+Free-tier models on OpenRouter have rate limits (~20 req/min, ~200 req/day). rival handles this automatically:
 
-All of these are zero-cost on the OpenRouter free tier.
+- **Discovery** health-checks models before adding them to the roster - rate-limited models don't make the cut
+- **Panel spacing** adds 10s between requests to avoid back-to-back 429s
+- **Retry logic** with 5 attempts, exponential backoff (5s base), and `Retry-After` header parsing
+- **Auto-fallback** if the cache runs out of models, falls back to a hardcoded default
+
+If you're hitting limits consistently, run `/rival --discover` to refresh - models that were congested earlier may have freed up.
 
 ---
 
 ## Technical details
 
+### scripts/rival-discover.sh
+
+The discovery script:
+- Queries OpenRouter `/api/v1/models` for all free-tier models
+- Filters: must end in `:free`, context length >= 32k
+- Parses parameter count from model ID (e.g., "120b" -> 120)
+- Selects top 8 candidates with family diversity (prefers different model families)
+- Health-checks each with a "Say OK" ping (8s timeout, 2s spacing between pings)
+- Writes survivors ranked by param count to `~/.rival/models.json`
+- Cache TTL: 24 hours (configurable in script)
+
 ### scripts/rival-companion.sh
 
 The companion script handles all OpenRouter communication:
-- Sources `~/.zshrc` via a login subshell for env var inheritance — your `OPENROUTER_API_KEY` is available even in hook contexts where env isn't loaded
-- Uses `stdin` for the curl request body to avoid `ARG_MAX` limits on large code inputs
-- Retries on `429` and `503` with exponential backoff (1s, 2s, 4s — then gives up)
-- Validates `jq` and `curl` are present before attempting any API call
-- Falls back to `OPENROUTER_API_KEY` env var if not already set
+- `--auto [N]` picks the Nth model from the discovery cache (default: 1)
+- `--delay N` waits N seconds before making the request (panel spacing)
+- `--model ID` overrides auto-selection with a specific model
+- Auto-triggers discovery when cache is missing or stale
+- Sources `~/.zshrc` for env var inheritance in hook contexts
+- Uses stdin for curl body to avoid ARG_MAX limits on large inputs
+- Retries on 429/503 with exponential backoff and Retry-After header support
 
 ### agents/rival-rescue.md
 
@@ -277,7 +322,7 @@ Defines the `rival:rival-rescue` agent that forwards general delegation tasks to
 
 ### skills/rival/skill.md
 
-Defines the `/rival` skill and all panel modes. No hooks needed — rival is on-demand only. No background processes, no flag files, no persistent state.
+Defines the `/rival` skill and all panel modes. No hooks needed - rival is on-demand only. No background processes, no flag files, no persistent state.
 
 ---
 
@@ -286,9 +331,10 @@ Defines the `/rival` skill and all panel modes. No hooks needed — rival is on-
 ```
 plugins/rival/
   .claude-plugin/plugin.json        # Plugin manifest
-  scripts/rival-companion.sh        # OpenRouter API caller with retry + env
+  scripts/rival-companion.sh        # OpenRouter API caller with retry + auto-select
+  scripts/rival-discover.sh         # Model discovery + health check + cache
   agents/rival-rescue.md            # General task delegation agent
-  skills/rival/skill.md             # /rival skill — single, panel, panel-parallel
+  skills/rival/skill.md             # /rival skill - single, panel, panel-parallel
   LICENSE                           # MIT
 ```
 
@@ -298,12 +344,14 @@ plugins/rival/
 
 A few things worth noting for anyone building OpenRouter-backed Claude Code plugins:
 
-1. **Env vars don't survive hooks** — the companion script has to source `~/.zshrc` via `bash -l` (login shell). Otherwise `OPENROUTER_API_KEY` is empty inside Claude Code's hook context, which produces a silent 401 and nothing else.
-2. **Large code inputs break `$()` substitution** — bash command substitution has an ARG_MAX ceiling. Feeding the curl body via stdin sidesteps this entirely. For small files it doesn't matter; for a 500-line module it does.
-3. **Sequential chain output needs structure** — early versions just concatenated model outputs. The chain only becomes useful when each model is explicitly told "here are the prior findings — address them." The prompt contract matters more than model selection.
-4. **Free tier models are rate-limited, not throttled** — you won't get degraded quality at peak times, you just get a 429. The retry logic handles this without requiring any user action.
-5. **`set -e` and retry loops do not mix** — `set -e` causes the script to exit immediately on any non-zero exit code, which means a retry loop only retries on HTTP errors (where curl exits 0). On network failures, curl exits non-zero and `set -e` kills the process before the retry condition is ever evaluated. We discovered this the hard way.
-6. **Parallel review sounds better than it is** — three independent opinions with no synthesis forces the human to do the reconciliation work. The sequential chain shifts that work to the models, where it belongs.
+1. **Free models disappear** - OpenRouter's free-tier roster changes without notice. Hardcoded model IDs broke within weeks. Dynamic discovery with health-check pings is the only reliable approach.
+2. **Env vars don't survive hooks** - the companion script has to source `~/.zshrc` via `bash -l` (login shell). Otherwise `OPENROUTER_API_KEY` is empty inside Claude Code's hook context.
+3. **Large code inputs break `$()` substitution** - bash command substitution has an ARG_MAX ceiling. Feeding the curl body via stdin sidesteps this entirely.
+4. **Sequential chain output needs structure** - early versions just concatenated model outputs. The chain only becomes useful when each model is explicitly told "here are the prior findings - address them."
+5. **Free tier models are rate-limited, not throttled** - you won't get degraded quality at peak times, you just get a 429. Spacing requests 10s apart plus retry logic handles this without user action.
+6. **`set -e` and retry loops do not mix** - `set -e` causes the script to exit immediately on any non-zero exit code, which means a retry loop only retries on HTTP errors (where curl exits 0). Network failures kill the script before any retry condition is evaluated.
+7. **Not all free models are equal** - some (Nemotron, GPT-OSS) respond instantly while others (Qwen, Llama) are heavily congested. Discovery health-checks solve this by testing reality, not assumptions.
+8. **Family diversity matters for adversarial review** - three models from the same family (e.g., all Qwen variants) tend to have correlated blind spots. Mixing families (nvidia + openai + google) produces genuinely independent perspectives.
 
 ---
 
@@ -313,21 +361,15 @@ I kept running into a version of the same problem: after a long Claude Code sess
 
 That's not review. That's confirmation.
 
-The obvious fix is to use a completely different model with no context. OpenRouter makes that free. But a single free model giving a single pass still misses things — not because the model is bad, but because any single reviewer has blind spots.
+The obvious fix is to use a completely different model with no context. OpenRouter makes that free. But a single free model giving a single pass still misses things - not because the model is bad, but because any single reviewer has blind spots.
 
-The chain idea came from thinking about how actual code review works on good teams. The first reviewer does the initial pass. The second reviewer reads that first pass before looking at the code — they come in knowing what to focus on and what's already been covered. The third reviewer resolves disputes. Three reviewers who have actually talked to each other are worth more than three reviewers who submit separate reports.
+The chain idea came from thinking about how actual code review works on good teams. The first reviewer does the initial pass. The second reviewer reads that first pass before looking at the code - they come in knowing what to focus on and what's already been covered. The third reviewer resolves disputes. Three reviewers who have actually talked to each other are worth more than three reviewers who submit separate reports.
 
-rival was built iteratively in a single session. Once the core was working, the first real test was running `/rival --panel` on rival's own source code.
-
-The chain found real bugs:
-
-- **Qwen + Llama** (first pass): 6 issues — missing argument validation, no curl timeout, dead code on line 47, the API key appearing in `ps` output, no retry on 429, fragile response parsing
-- **Gemma** (second pass, reading Qwen's findings): confirmed most of those, disputed the dead code finding (correctly — the branch was reachable via env), and found the critical structural flaw: `set -e` at the top of the script was silently defeating the entire retry mechanism. Retries only fired on HTTP errors where curl exits 0. Any network failure caused curl to exit non-zero, and `set -e` killed the process immediately — before the retry logic could run. The retry loop looked correct and did nothing.
-- **Llama** (third pass, resolving): confirmed Gemma's dispute, set the priority order, called out the `set -e` issue as the most urgent fix.
+rival was built iteratively in a single session. Once the core was working, the first real test was running `/rival --panel` on rival's own source code. The chain found real bugs - including the critical `set -e` vs retry loop conflict that silently defeated the entire retry mechanism.
 
 Three rounds of review. Each caught something the previous missed. All of the findings were real bugs that got fixed.
 
-Getting the prompt contracts right — so each model in the chain actually responds to prior findings rather than starting fresh — was the hardest part. The result is something that costs nothing and tells you things Claude won't.
+Getting the prompt contracts right - so each model in the chain actually responds to prior findings rather than starting fresh - was the hardest part. The result is something that costs nothing and tells you things Claude won't.
 
 ---
 
@@ -336,11 +378,10 @@ Getting the prompt contracts right — so each model in the chain actually respo
 Open issues and PRs at [github.com/bambushu/rival](https://github.com/bambushu/rival).
 
 Ideas for future versions:
-- Configurable chain composition (pick your own three models)
-- Severity scoring per finding across the chain
 - `--focus` flag to target specific concerns (security, performance, style)
 - `--file` override to review a specific path rather than current context
 - Output as a structured JSON report for downstream tooling
+- Multi-provider support (Groq, Together AI as backup providers)
 
 ---
 

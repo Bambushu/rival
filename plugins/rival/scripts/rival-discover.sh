@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# rival-discover.sh — Discover best available free models on OpenRouter
+# Queries the model list, filters for :free with sufficient context,
+# ranks by parameter count, health-checks the top candidates,
+# and writes a ranked roster to ~/.rival/models.json
+#
+# Usage: rival-discover.sh [--force]
+#   --force: skip cache age check, always rediscover
+
+CACHE_DIR="$HOME/.rival"
+CACHE_FILE="$CACHE_DIR/models.json"
+TTL_HOURS=24
+MIN_CONTEXT=32768
+PING_TIMEOUT=8
+MAX_CANDIDATES=8
+
+FORCE=false
+[[ "${1:-}" == "--force" ]] && FORCE=true
+
+# Check dependencies
+command -v jq >/dev/null 2>&1 || { echo "Error: jq is required but not installed" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not installed" >&2; exit 1; }
+
+# Source API key
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  OPENROUTER_API_KEY=$(bash -lc 'echo "$OPENROUTER_API_KEY"' 2>/dev/null) || true
+fi
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.profile" "$HOME/.env"; do
+    if [[ -f "$f" ]] && grep -q OPENROUTER_API_KEY "$f" 2>/dev/null; then
+      OPENROUTER_API_KEY=$(grep 'OPENROUTER_API_KEY' "$f" | head -1 | sed 's/.*=["'"'"']\{0,1\}//' | sed 's/["'"'"']\{0,1\}$//')
+      [[ -n "$OPENROUTER_API_KEY" ]] && break
+    fi
+  done
+fi
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "Error: OPENROUTER_API_KEY not set." >&2
+  exit 1
+fi
+
+# Check cache freshness (skip if --force)
+if [[ "$FORCE" == "false" && -f "$CACHE_FILE" ]]; then
+  cache_age=$(( ( $(date +%s) - $(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ) / 3600 ))
+  if [[ "$cache_age" -lt "$TTL_HOURS" ]]; then
+    echo "Cache is ${cache_age}h old (TTL: ${TTL_HOURS}h). Use --force to refresh." >&2
+    exit 0
+  fi
+fi
+
+mkdir -p "$CACHE_DIR"
+
+echo "Discovering free models on OpenRouter..." >&2
+
+# Fetch all models
+models_raw=$(curl -s --connect-timeout 10 --max-time 30 \
+  "https://openrouter.ai/api/v1/models" \
+  -H "Authorization: Bearer ${OPENROUTER_API_KEY}") || {
+  echo "Error: failed to fetch model list" >&2
+  exit 1
+}
+
+# Filter: :free suffix, context >= MIN_CONTEXT
+# Extract param count from model ID heuristics (e.g., "120b", "31b", "70b")
+candidates=$(echo "$models_raw" | jq --argjson min_ctx "$MIN_CONTEXT" '
+  [.data[]
+   | select(.id | endswith(":free"))
+   | select(.context_length >= $min_ctx)
+   | {
+       id: .id,
+       context: .context_length,
+       family: (.id | split("/")[0]),
+       params_b: (
+         (.id | capture("(?<p>[0-9]+)[bB]") | .p | tonumber) // 0
+       )
+     }
+  ]
+  | sort_by(-.params_b)
+')
+
+total=$(echo "$candidates" | jq 'length')
+echo "Found $total free models with >= ${MIN_CONTEXT} context." >&2
+
+if [[ "$total" -eq 0 ]]; then
+  echo "Error: no eligible models found" >&2
+  exit 1
+fi
+
+# Select top candidates with family diversity
+# Take up to MAX_CANDIDATES, preferring different families
+selected=$(echo "$candidates" | jq --argjson max "$MAX_CANDIDATES" '
+  reduce .[] as $m (
+    {picked: [], families_used: []};
+    if (.picked | length) >= $max then .
+    elif (.families_used | index($m.family)) != null and (.picked | length) >= 3 then .
+    else .picked += [$m] | .families_used += [$m.family]
+    end
+  ) | .picked
+')
+
+num_selected=$(echo "$selected" | jq 'length')
+echo "Selected $num_selected candidates for health check (family-diverse):" >&2
+echo "$selected" | jq -r '.[] | "  \(.id) (\(.params_b)B, \(.context/1024|floor)k ctx)"' >&2
+
+# Health-check: ping each candidate with a simple prompt
+echo "Running health checks (${PING_TIMEOUT}s timeout each)..." >&2
+
+healthy="[]"
+for i in $(seq 0 $((num_selected - 1))); do
+  model_id=$(echo "$selected" | jq -r ".[$i].id")
+  params_b=$(echo "$selected" | jq -r ".[$i].params_b")
+  context=$(echo "$selected" | jq -r ".[$i].context")
+  family=$(echo "$selected" | jq -r ".[$i].family")
+
+  # Ping with minimal prompt
+  ping_body=$(jq -n --arg model "$model_id" '{
+    "model": $model,
+    "messages": [{"role": "user", "content": "Say OK"}],
+    "max_tokens": 4
+  }')
+
+  start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
+  ping_response=$(curl -s --connect-timeout 5 --max-time "$PING_TIMEOUT" \
+    -w "\n%{http_code}" \
+    -X POST "https://openrouter.ai/api/v1/chat/completions" \
+    -H "Authorization: Bearer ${OPENROUTER_API_KEY}" \
+    -H "Content-Type: application/json" \
+    -H "HTTP-Referer: https://github.com/bambushu/rival" \
+    -H "X-Title: rival-discover" \
+    -d "$ping_body") || true
+  end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
+
+  ping_code="${ping_response##*$'\n'}"
+  ping_ms=$(( end_ms - start_ms ))
+
+  if [[ "$ping_code" == "200" ]]; then
+    echo "  OK  $model_id (${ping_ms}ms)" >&2
+    healthy=$(echo "$healthy" | jq --arg id "$model_id" --argjson p "$params_b" --argjson c "$context" --arg fam "$family" --argjson ms "$ping_ms" \
+      '. + [{"id": $id, "params_b": $p, "context": $c, "family": $fam, "ping_ms": $ms}]')
+  else
+    echo "  FAIL $model_id (HTTP $ping_code)" >&2
+  fi
+
+  # Small delay between pings to avoid triggering rate limits during discovery
+  sleep 2
+done
+
+num_healthy=$(echo "$healthy" | jq 'length')
+
+if [[ "$num_healthy" -eq 0 ]]; then
+  echo "Error: no models passed health check" >&2
+  exit 1
+fi
+
+# Sort healthy models: by params_b desc, then ping_ms asc
+ranked=$(echo "$healthy" | jq 'sort_by(-.params_b, .ping_ms)')
+
+# Write cache
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n \
+  --arg ts "$now" \
+  --argjson ttl "$TTL_HOURS" \
+  --argjson models "$ranked" \
+  '{
+    "discovered_at": $ts,
+    "ttl_hours": $ttl,
+    "models": $models
+  }' > "$CACHE_FILE"
+
+echo "" >&2
+echo "Discovery complete. $num_healthy models available:" >&2
+echo "$ranked" | jq -r '.[] | "  #\(. as $m | input_line_number // 0) \(.id) (\(.params_b)B, \(.ping_ms)ms)"' 2>/dev/null >&2 || \
+echo "$ranked" | jq -r '.[] | "  \(.id) (\(.params_b)B, \(.ping_ms)ms)"' >&2
+echo "Cache written to $CACHE_FILE" >&2

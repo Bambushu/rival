@@ -4,7 +4,7 @@ set -uo pipefail
 
 # rival-companion.sh — OpenRouter API wrapper for the rival plugin
 # Usage: rival-companion.sh [--model MODEL] [--system SYSTEM_PROMPT] TASK_TEXT
-# Default model: qwen/qwen3.6-plus:free
+# Default model: nvidia/nemotron-3-super-120b-a12b:free
 
 # Check dependencies
 command -v jq >/dev/null 2>&1 || { echo "Error: jq is required but not installed" >&2; exit 1; }
@@ -25,12 +25,15 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   done
 fi
 
-MODEL="qwen/qwen3.6-plus:free"
+MODEL="nvidia/nemotron-3-super-120b-a12b:free"
 SYSTEM_PROMPT=""
 TASK_TEXT=""
-MAX_RETRIES=6
-BASE_DELAY=2
-RATE_LIMIT_BASE=15
+MAX_RETRIES=5
+RETRY_DELAY=5
+INITIAL_DELAY=0
+AUTO_RANK=0
+CACHE_FILE="$HOME/.rival/models.json"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +47,21 @@ while [[ $# -gt 0 ]]; do
       SYSTEM_PROMPT="$2"
       shift 2
       ;;
+    --delay)
+      [[ $# -ge 2 ]] || { echo "Error: --delay requires a value in seconds" >&2; exit 1; }
+      INITIAL_DELAY="$2"
+      shift 2
+      ;;
+    --auto)
+      # --auto or --auto N (default N=1)
+      if [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]]; then
+        AUTO_RANK="$2"
+        shift 2
+      else
+        AUTO_RANK=1
+        shift
+      fi
+      ;;
     *)
       if [[ -z "$TASK_TEXT" ]]; then
         TASK_TEXT="$1"
@@ -54,6 +72,38 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Handle --auto: pick model from discovery cache
+if [[ "$AUTO_RANK" -gt 0 ]]; then
+  # Auto-trigger discovery if cache is missing or stale
+  needs_discovery=false
+  if [[ ! -f "$CACHE_FILE" ]]; then
+    needs_discovery=true
+  else
+    cache_age=$(( ( $(date +%s) - $(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ) / 3600 ))
+    ttl=$(jq -r '.ttl_hours // 24' "$CACHE_FILE" 2>/dev/null || echo 24)
+    [[ "$cache_age" -ge "$ttl" ]] && needs_discovery=true
+  fi
+
+  if [[ "$needs_discovery" == "true" ]]; then
+    echo "Model cache stale/missing. Running discovery..." >&2
+    bash "$SCRIPT_DIR/rival-discover.sh" --force >&2 || true
+  fi
+
+  # Read model from cache by rank (1-indexed)
+  if [[ -f "$CACHE_FILE" ]]; then
+    idx=$((AUTO_RANK - 1))
+    auto_model=$(jq -r ".models[$idx].id // empty" "$CACHE_FILE" 2>/dev/null)
+    if [[ -n "$auto_model" ]]; then
+      MODEL="$auto_model"
+      echo "Auto-selected model #$AUTO_RANK: $MODEL" >&2
+    else
+      echo "Warning: rank $AUTO_RANK not in cache (only $(jq '.models | length' "$CACHE_FILE") models). Using default." >&2
+    fi
+  else
+    echo "Warning: discovery failed, using default model." >&2
+  fi
+fi
 
 if [[ -z "$TASK_TEXT" ]]; then
   echo "Error: no task text provided" >&2
@@ -87,24 +137,25 @@ body=$(jq -n \
     "max_tokens": 16384
   }')
 
-# Write auth header to temp file (keeps API key out of ps output)
-auth_config=$(mktemp)
-trap 'rm -f "$auth_config"' EXIT
-printf -- '-H "Authorization: Bearer %s"\n' "${OPENROUTER_API_KEY}" > "$auth_config"
-chmod 600 "$auth_config"
+# Honour --delay for panel mode spacing (avoids back-to-back free-tier hits)
+if [[ "$INITIAL_DELAY" -gt 0 ]]; then
+  echo "Waiting ${INITIAL_DELAY}s before request (panel spacing)..." >&2
+  sleep "$INITIAL_DELAY"
+fi
+
+# Temp file for response headers (cleaned up on exit)
+header_file=$(mktemp)
+trap 'rm -f "$header_file"' EXIT
 
 # Call OpenRouter with retry logic for transient failures
 attempt=0
-headers_file=$(mktemp)
-trap 'rm -f "$headers_file"' EXIT
-
 while true; do
   attempt=$((attempt + 1))
 
-  response=$(curl -s --connect-timeout 10 --max-time 120 -w "\n%{http_code}" \
-    -D "$headers_file" \
+  response=$(curl -s --connect-timeout 10 --max-time 120 \
+    -D "$header_file" -w "\n%{http_code}" \
     -X POST "https://openrouter.ai/api/v1/chat/completions" \
-    -K "$auth_config" \
+    -H "Authorization: Bearer ${OPENROUTER_API_KEY}" \
     -H "Content-Type: application/json" \
     -H "HTTP-Referer: https://github.com/bambushu/rival" \
     -H "X-Title: rival-plugin" \
@@ -117,9 +168,9 @@ while true; do
   # Guard: if http_code isn't numeric, curl failed entirely
   if ! [[ "$http_code" =~ ^[0-9]+$ ]]; then
     if [[ "$attempt" -lt "$MAX_RETRIES" ]]; then
-      delay=$((BASE_DELAY * (2 ** (attempt - 1))))
-      echo "Curl failed (attempt $attempt/$MAX_RETRIES), retrying in ${delay}s..." >&2
-      sleep "$delay"
+      echo "Curl failed (attempt $attempt/$MAX_RETRIES), retrying in ${RETRY_DELAY}s..." >&2
+      sleep "$RETRY_DELAY"
+      RETRY_DELAY=$((RETRY_DELAY * 2))
       continue
     fi
     echo "Error: curl failed after $attempt attempts (no HTTP status received)" >&2
@@ -129,18 +180,16 @@ while true; do
   # Retry on 429 (rate limit) or 503 (service unavailable)
   if [[ "$http_code" -eq 429 || "$http_code" -eq 503 ]]; then
     if [[ "$attempt" -lt "$MAX_RETRIES" ]]; then
-      # Check Retry-After header (seconds or HTTP-date — we handle seconds)
-      retry_after=$(grep -i '^retry-after:' "$headers_file" 2>/dev/null | head -1 | tr -d '\r' | awk '{print $2}')
-      if [[ "$retry_after" =~ ^[0-9]+$ ]] && [[ "$retry_after" -gt 0 ]]; then
-        delay=$((retry_after + 1))  # add 1s safety margin
+      # Respect Retry-After header if present (seconds or HTTP-date)
+      retry_after=$(grep -i '^retry-after:' "$header_file" 2>/dev/null | head -1 | sed 's/[^0-9]//g')
+      if [[ -n "$retry_after" && "$retry_after" -gt 0 ]] 2>/dev/null; then
+        wait_time="$retry_after"
       else
-        # Exponential backoff with higher base for rate limits
-        delay=$((RATE_LIMIT_BASE * (2 ** (attempt - 1))))
-        # Cap at 120s
-        [[ "$delay" -gt 120 ]] && delay=120
+        wait_time="$RETRY_DELAY"
       fi
-      echo "Rate limited (HTTP $http_code, attempt $attempt/$MAX_RETRIES), waiting ${delay}s..." >&2
-      sleep "$delay"
+      echo "Rate limited (attempt $attempt/$MAX_RETRIES), waiting ${wait_time}s..." >&2
+      sleep "$wait_time"
+      RETRY_DELAY=$((RETRY_DELAY * 2))
       continue
     fi
   fi

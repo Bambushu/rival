@@ -52,26 +52,29 @@ Get a critical second opinion from structurally different model families.
 
 When `--panel` is used, send the code through multiple models **sequentially**, where each model builds on the previous model's findings. This avoids free-tier rate limits and produces deeper, layered analysis.
 
+### Model selection (automatic)
+
+Models are selected dynamically via `--auto N` which reads from a discovery cache (`~/.rival/models.json`). The cache ranks models by parameter count with family diversity enforced. If the cache is stale (>24h) or missing, discovery runs automatically.
+
+To manually refresh the model roster: run `rival-discover.sh --force`
+
 ### Default panel (3 models):
-1. `qwen/qwen3.6-plus:free` — first pass, finds initial issues
-2. `google/gemma-3-27b-it:free` — second pass, reviews code + Qwen's findings
-3. `meta-llama/llama-3.3-70b-instruct:free` — final pass, validates + fills gaps
+1. `--auto 1` — top-ranked model, first pass
+2. `--auto 2` — second-ranked model (different family), reviews code + first model's findings
+3. `--auto 3` — third-ranked model (different family), validates + fills gaps
 
 ### Panel with 2 models (`--panel 2`):
-1. `qwen/qwen3.6-plus:free`
-2. `google/gemma-3-27b-it:free`
+1. `--auto 1`
+2. `--auto 2`
 
-### Fallback models (if a panel member returns error after retries):
-- `qwen/qwen3-coder:free`
-- `nvidia/nemotron-3-super-120b-a12b:free`
-- `nousresearch/hermes-3-llama-3.1-405b:free`
-
-If a model fails, try the next fallback. If all fallbacks fail for that slot, skip it and continue with remaining models.
+If a model fails after retries, skip it and continue with remaining models.
 
 ### Sequential execution flow:
 
-**Step 1 — First model (Qwen):**
-Send to rival-rescue with `--model qwen/qwen3.6-plus:free`:
+**IMPORTANT: Free-tier rate limit handling.** Between each panel request, pass `--delay 8` to rival-companion.sh. This spaces out requests to avoid 429 rate limits on OpenRouter's free tier. The delay is only added for the 2nd and 3rd models (the first fires immediately).
+
+**Step 1 — First model:**
+Send to rival-rescue with `--auto 1`:
 ```
 Review this code as an adversarial critic. Your job is to find problems, not praise.
 Focus on: bugs, logic errors, security vulnerabilities, performance issues, edge cases, incorrect assumptions.
@@ -83,11 +86,11 @@ Code to review:
 ```
 Save the response as `findings_1`.
 
-**Step 2 — Second model (Gemma):**
-Send to rival-rescue with `--model google/gemma-3-27b-it:free`:
+**Step 2 — Second model:**
+Send to rival-rescue with `--auto 2 --delay 10`:
 ```
 You are the second reviewer in a chained adversarial code review.
-A previous reviewer (Qwen) already found these issues:
+A previous reviewer already found these issues:
 
 [findings_1]
 
@@ -102,16 +105,16 @@ Original code:
 ```
 Save the response as `findings_2`.
 
-**Step 3 — Third model (Llama):**
-Send to rival-rescue with `--model meta-llama/llama-3.3-70b-instruct:free`:
+**Step 3 — Third model:**
+Send to rival-rescue with `--auto 3 --delay 10`:
 ```
 You are the final reviewer in a 3-model chained adversarial code review.
 
 Previous findings:
---- Reviewer 1 (Qwen) ---
+--- Reviewer 1 ---
 [findings_1]
 
---- Reviewer 2 (Gemma) ---
+--- Reviewer 2 ---
 [findings_2]
 
 Your job:
@@ -135,7 +138,7 @@ Present the final model's consolidated summary as the primary output, prefixed w
 ```
 ## Rival Panel Review (3 models, sequential chain)
 
-Models: Qwen 3.6+ → Gemma 3 27B → Llama 3.3 70B
+Models: [model 1 name] → [model 2 name] → [model 3 name]
 
 [findings_3 — the consolidated summary from the final reviewer]
 
@@ -143,42 +146,47 @@ Models: Qwen 3.6+ → Gemma 3 27B → Llama 3.3 70B
 <details>
 <summary>Individual reviewer outputs</summary>
 
-### Reviewer 1: Qwen 3.6+
+### Reviewer 1: [model 1 name]
 [findings_1]
 
-### Reviewer 2: Gemma 3 27B
+### Reviewer 2: [model 2 name]
 [findings_2]
 </details>
 ```
+
+Note: The model names come from the `--auto` stderr output ("Auto-selected model #N: ..."). Include them in the header so the user knows which models reviewed.
 
 The individual outputs go in a collapsed details block so the user sees the clean consolidated view first but can drill into each model's raw output.
 
 ## Parallel Panel Mode (--panel-parallel)
 
-When `--panel-parallel` is used, send the SAME code to multiple models **in parallel** using separate Agent calls in a single message. Each agent gets a different `--model` flag. Models review independently without seeing each other's findings.
+When `--panel-parallel` is used, send the SAME adversarial review prompt to multiple models **sequentially with spacing** (not truly parallel — free-tier rate limits make simultaneous requests unreliable). Each model reviews independently without seeing the others' findings.
 
 Use the same model set and fallbacks as sequential mode.
 
-Send each model the same adversarial review prompt (the single-mode prompt from step 3). Launch all agents in a single message for true parallelism.
+Send each model the same adversarial review prompt (the single-mode prompt from step 4). Send them one at a time using rival-rescue agents:
+- Model 1: `--auto 1`
+- Model 2: `--auto 2 --delay 10`
+- Model 3: `--auto 3 --delay 10`
 
 ### Presenting parallel panel results:
 
-After all agents return, present a merged review:
+After all models return, present a merged review:
 
 ```
-## Rival Panel Review (3 models, parallel blind)
+## Rival Panel Review (3 models, independent blind)
 
 ### Consensus (found by 2+ models)
 - [findings that overlap across models]
 
-### Qwen 3.6+ only
-- [unique findings from Qwen]
+### [Model 1 name] only
+- [unique findings]
 
-### Gemma 3 27B only
-- [unique findings from Gemma]
+### [Model 2 name] only
+- [unique findings]
 
-### Llama 3.3 70B only
-- [unique findings from Llama]
+### [Model 3 name] only
+- [unique findings]
 
 ### Disagreements
 - [where models contradict each other — flag for human judgment]
@@ -186,23 +194,26 @@ After all agents return, present a merged review:
 
 Consensus findings are highest priority. Unique findings from a single model are lower confidence but worth checking.
 
-**Note:** Parallel mode is faster but less thorough than sequential. It's also more likely to hit free-tier rate limits. Use when speed matters more than depth.
+**Note:** Parallel mode is faster than sequential chain (no cross-referencing of findings) but less thorough. Requests are spaced 10s apart to respect free-tier rate limits.
 
 ## Model override
 
 The user can specify a model: `/rival --model deepseek/deepseek-r1:free`
 
-Pass the `--model` flag through to the rival-rescue agent. Model override is for single mode only — panel mode uses its own model set.
+Pass the `--model` flag through to the rival-rescue agent. Model override is for single mode only — panel mode uses `--auto`.
+
+When no `--model` is specified in single mode, use `--auto` (picks the top-ranked model from discovery cache).
 
 ## Example usage
 
 ```
-/rival                              # single review with Qwen 3.6+
+/rival                              # single review with best available model
 /rival src/auth.ts                  # review specific file
-/rival --model deepseek             # use DeepSeek instead
+/rival --model deepseek/deepseek-r1:free  # use specific model
 /rival --panel                      # 3-model sequential chain (recommended)
 /rival --panel 2                    # 2-model sequential chain
-/rival --panel-parallel             # 3-model blind parallel (faster)
-/rival --panel-parallel 2           # 2-model blind parallel
+/rival --panel-parallel             # 3-model independent review (spaced)
+/rival --panel-parallel 2           # 2-model independent review
 /rival --panel src/auth.ts          # panel review of specific file
+/rival --discover                   # refresh model roster manually
 ```
