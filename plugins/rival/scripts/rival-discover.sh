@@ -13,7 +13,10 @@ CACHE_DIR="$HOME/.rival"
 CACHE_FILE="$CACHE_DIR/models.json"
 TTL_HOURS=24
 MIN_CONTEXT=32768
-PING_TIMEOUT=8
+MIN_PARAMS_B=7        # Exclude tiny models useless for code review
+PING_TIMEOUT=12       # Free tier can be slow to respond
+PING_DELAY=8          # Seconds between health-check pings (free tier needs breathing room)
+MIN_HEALTHY=3         # Stop pinging once we have this many healthy diverse-family models
 MAX_CANDIDATES=8
 
 FORCE=false
@@ -61,9 +64,9 @@ models_raw=$(curl -s --connect-timeout 10 --max-time 30 \
   exit 1
 }
 
-# Filter: :free suffix, context >= MIN_CONTEXT
+# Filter: :free suffix, context >= MIN_CONTEXT, params >= MIN_PARAMS_B
 # Extract param count from model ID heuristics (e.g., "120b", "31b", "70b")
-candidates=$(echo "$models_raw" | jq --argjson min_ctx "$MIN_CONTEXT" '
+candidates=$(echo "$models_raw" | jq --argjson min_ctx "$MIN_CONTEXT" --argjson min_params "$MIN_PARAMS_B" '
   [.data[]
    | select(.id | endswith(":free"))
    | select(.context_length >= $min_ctx)
@@ -75,6 +78,7 @@ candidates=$(echo "$models_raw" | jq --argjson min_ctx "$MIN_CONTEXT" '
          (.id | capture("(?<p>[0-9]+)[bB]") | .p | tonumber) // 0
        )
      }
+   | select(.params_b >= $min_params)
   ]
   | sort_by(-.params_b)
 ')
@@ -113,37 +117,56 @@ for i in $(seq 0 $((num_selected - 1))); do
   context=$(echo "$selected" | jq -r ".[$i].context")
   family=$(echo "$selected" | jq -r ".[$i].family")
 
-  # Ping with minimal prompt
+  # Ping with minimal prompt (retry once on 429)
   ping_body=$(jq -n --arg model "$model_id" '{
     "model": $model,
     "messages": [{"role": "user", "content": "Say OK"}],
     "max_tokens": 4
   }')
 
-  start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
-  ping_response=$(curl -s --connect-timeout 5 --max-time "$PING_TIMEOUT" \
-    -w "\n%{http_code}" \
-    -X POST "https://openrouter.ai/api/v1/chat/completions" \
-    -H "Authorization: Bearer ${OPENROUTER_API_KEY}" \
-    -H "Content-Type: application/json" \
-    -H "HTTP-Referer: https://github.com/bambushu/rival" \
-    -H "X-Title: rival-discover" \
-    -d "$ping_body") || true
-  end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
+  ping_ok=false
+  for ping_attempt in 1 2; do
+    start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
+    ping_response=$(curl -s --connect-timeout 5 --max-time "$PING_TIMEOUT" \
+      -w "\n%{http_code}" \
+      -X POST "https://openrouter.ai/api/v1/chat/completions" \
+      -H "Authorization: Bearer ${OPENROUTER_API_KEY}" \
+      -H "Content-Type: application/json" \
+      -H "HTTP-Referer: https://github.com/bambushu/rival" \
+      -H "X-Title: rival-discover" \
+      -d "$ping_body") || true
+    end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
 
-  ping_code="${ping_response##*$'\n'}"
-  ping_ms=$(( end_ms - start_ms ))
+    ping_code="${ping_response##*$'\n'}"
+    ping_ms=$(( end_ms - start_ms ))
 
-  if [[ "$ping_code" == "200" ]]; then
+    if [[ "$ping_code" == "200" ]]; then
+      ping_ok=true
+      break
+    elif [[ "$ping_code" == "429" && "$ping_attempt" -eq 1 ]]; then
+      echo "  429  $model_id -- retrying after ${PING_DELAY}s..." >&2
+      sleep "$PING_DELAY"
+    fi
+  done
+
+  if [[ "$ping_ok" == "true" ]]; then
     echo "  OK  $model_id (${ping_ms}ms)" >&2
     healthy=$(echo "$healthy" | jq --arg id "$model_id" --argjson p "$params_b" --argjson c "$context" --arg fam "$family" --argjson ms "$ping_ms" \
       '. + [{"id": $id, "params_b": $p, "context": $c, "family": $fam, "ping_ms": $ms}]')
   else
-    echo "  FAIL $model_id (HTTP $ping_code)" >&2
+    echo "  FAIL $model_id (HTTP ${ping_code:-timeout})" >&2
   fi
 
-  # Small delay between pings to avoid triggering rate limits during discovery
-  sleep 2
+  # Early exit: if we have enough healthy models from diverse families, stop burning rate limit
+  num_healthy_so_far=$(echo "$healthy" | jq 'length')
+  healthy_families=$(echo "$healthy" | jq '[.[].family] | unique | length')
+  if [[ "$num_healthy_so_far" -ge "$MIN_HEALTHY" && "$healthy_families" -ge 2 ]]; then
+    echo "  Reached $num_healthy_so_far healthy models from $healthy_families families -- stopping early." >&2
+    break
+  fi
+
+  # Breathing room between pings -- free tier rate limits are aggressive
+  sleep "$PING_DELAY"
 done
 
 num_healthy=$(echo "$healthy" | jq 'length')

@@ -32,6 +32,9 @@ MAX_RETRIES=5
 RETRY_DELAY=5
 INITIAL_DELAY=0
 AUTO_RANK=0
+USE_LOCAL=false
+LOCAL_MODEL="qwen2.5-coder:32b"
+OLLAMA_BASE="${OLLAMA_HOST:-http://localhost:11434}"
 CACHE_FILE="$HOME/.rival/models.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -51,6 +54,17 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "Error: --delay requires a value in seconds" >&2; exit 1; }
       INITIAL_DELAY="$2"
       shift 2
+      ;;
+    --local)
+      USE_LOCAL=true
+      # Optional local model override: --local deepseek-r1:32b
+      # Model names contain ":" or "/" -- anything else is task text
+      if [[ $# -ge 2 && "$2" =~ [:\/] && ! "$2" =~ ^-- ]]; then
+        LOCAL_MODEL="$2"
+        shift 2
+      else
+        shift
+      fi
       ;;
     --auto)
       # --auto or --auto N (default N=1)
@@ -108,6 +122,45 @@ fi
 if [[ -z "$TASK_TEXT" ]]; then
   echo "Error: no task text provided" >&2
   exit 1
+fi
+
+# --local: route to Ollama instead of OpenRouter
+if [[ "$USE_LOCAL" == "true" ]]; then
+  if ! curl -s --connect-timeout 2 --max-time 3 "${OLLAMA_BASE}/api/tags" >/dev/null 2>&1; then
+    echo "Error: Ollama not reachable at ${OLLAMA_BASE}. Start with: brew services start ollama" >&2
+    exit 1
+  fi
+  MODEL="$LOCAL_MODEL"
+  echo "Local mode: ${MODEL} via Ollama" >&2
+
+  if [[ -n "$SYSTEM_PROMPT" ]]; then
+    messages=$(jq -n --arg sys "$SYSTEM_PROMPT" --arg usr "$TASK_TEXT" \
+      '[{"role":"system","content":$sys},{"role":"user","content":$usr}]')
+  else
+    messages=$(jq -n --arg usr "$TASK_TEXT" '[{"role":"user","content":$usr}]')
+  fi
+
+  body=$(jq -n --arg model "$MODEL" --argjson messages "$messages" \
+    '{"model": $model, "messages": $messages, "max_tokens": 16384, "stream": false}')
+
+  response=$(curl -s --connect-timeout 5 --max-time 300 \
+    -w "\n%{http_code}" \
+    -X POST "${OLLAMA_BASE}/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -d @- <<< "$body") || { echo "Error: Ollama request failed" >&2; exit 1; }
+
+  http_code="${response##*$'\n'}"
+  response_body="${response%$'\n'*}"
+
+  if [[ "$http_code" -ne 200 ]]; then
+    echo "Ollama error (HTTP $http_code):" >&2
+    echo "$response_body" | jq -r '.error // .' 2>/dev/null >&2
+    exit 1
+  fi
+
+  content=$(echo "$response_body" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+  echo "${content:-No response content}"
+  exit 0
 fi
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
@@ -192,13 +245,31 @@ while true; do
       RETRY_DELAY=$((RETRY_DELAY * 2))
       continue
     fi
+
+    # All retries exhausted on this model -- try falling back to next ranked model
+    if [[ "$AUTO_RANK" -gt 0 && -f "$CACHE_FILE" ]]; then
+      next_rank=$((AUTO_RANK + 1))
+      fallback_model=$(jq -r ".models[$((next_rank - 1))].id // empty" "$CACHE_FILE" 2>/dev/null)
+      if [[ -n "$fallback_model" && "$fallback_model" != "$MODEL" ]]; then
+        echo "Model $MODEL exhausted retries. Falling back to #$next_rank: $fallback_model" >&2
+        MODEL="$fallback_model"
+        AUTO_RANK="$next_rank"
+        # Rebuild request body with new model
+        body=$(jq -n --arg model "$MODEL" --argjson messages "$messages" \
+          '{"model": $model, "messages": $messages, "max_tokens": 16384}')
+        attempt=0
+        RETRY_DELAY=5
+        sleep 3
+        continue
+      fi
+    fi
   fi
 
   break
 done
 
 if [[ "$http_code" -ne 200 ]]; then
-  echo "OpenRouter API error (HTTP $http_code) after $attempt attempt(s):" >&2
+  echo "OpenRouter API error (HTTP $http_code) after $attempt attempt(s) on $MODEL:" >&2
   echo "$response_body" | jq -r '.error.message // .error // .' 2>/dev/null >&2
   exit 1
 fi

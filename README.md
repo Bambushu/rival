@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <strong>Adversarial code review and task delegation - powered by free OpenRouter models.</strong><br>
+  <strong>Adversarial code review and task delegation - powered by free OpenRouter models or local Ollama.</strong><br>
   One model reviews your code. Three models chain their findings. Zero cost.
 </p>
 
@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/Claude_Code-v2.1.80+-blue?style=flat-square" alt="Claude Code v2.1.80+">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License">
   <img src="https://img.shields.io/badge/via-OpenRouter_free_tier-a855f7?style=flat-square" alt="Via OpenRouter free tier">
+  <img src="https://img.shields.io/badge/local-Ollama_supported-orange?style=flat-square" alt="Ollama supported">
 </p>
 
 ---
@@ -26,7 +27,7 @@ Code review inside the same conversation context is not really review. Claude ha
 
 ## What it looks like
 
-Three modes depending on how much scrutiny you want:
+Four modes depending on how much scrutiny you want:
 
 **Single** - one model, fast, honest second opinion:
 ```
@@ -43,6 +44,11 @@ Three modes depending on how much scrutiny you want:
 /rival --panel-parallel
 ```
 
+**Local** - same review, no internet needed:
+```
+/rival --local
+```
+
 ---
 
 ## Dynamic model discovery
@@ -51,11 +57,12 @@ rival automatically finds the best available free models on OpenRouter. No hardc
 
 ### How it works
 
-1. **Discover** - queries OpenRouter's model API, filters for `:free` models with 32k+ context
+1. **Discover** - queries OpenRouter's model API, filters for `:free` models with 32k+ context and 7B+ parameters
 2. **Rank** - sorts by parameter count (bigger = better reasoning for code review)
 3. **Diversify** - ensures panel models come from different families (nvidia, openai, google, meta, qwen)
-4. **Health-check** - pings top candidates with a real request, drops any that 429
-5. **Cache** - writes survivors to `~/.rival/models.json`, valid for 24 hours
+4. **Health-check** - pings top candidates with a real request, retries once on 429, drops persistent failures
+5. **Early exit** - stops pinging once 3+ healthy models from 2+ families are found (saves rate limit budget)
+6. **Cache** - writes survivors to `~/.rival/models.json`, valid for 24 hours
 
 Discovery runs automatically when the cache is missing or stale. You can also trigger it manually:
 
@@ -172,6 +179,7 @@ This mirrors how a real code review meeting works. Parallel review is silent pol
   +-- Model #3 --> resolves disputes, prioritizes, synthesizes
         returns chained summary with verdict
         (10s spacing between models for free-tier rate limits)
+        degrades gracefully if fewer models available
 
 /rival --panel-parallel
   |
@@ -179,6 +187,12 @@ This mirrors how a real code review meeting works. Parallel review is silent pol
   +-- Model #2 --| independent, spaced 10s apart
   +-- Model #3 --+
         merged: consensus / unique findings / disagreements
+
+/rival --local
+  |
+  +-- local Ollama model (default: qwen2.5-coder:32b)
+        same review behavior, zero network dependency
+        override model: /rival --local deepseek-r1:32b
 ```
 
 ---
@@ -186,10 +200,16 @@ This mirrors how a real code review meeting works. Parallel review is silent pol
 ## Requirements
 
 - **Claude Code** v2.1.80+
-- **OpenRouter API key** - free at [openrouter.ai](https://openrouter.ai)
 - **jq** (`brew install jq`)
 - **curl**
 - **python3** (for timing during discovery health checks)
+
+For OpenRouter mode (default):
+- **OpenRouter API key** - free at [openrouter.ai](https://openrouter.ai)
+
+For local mode (`--local`):
+- **Ollama** - [ollama.com](https://ollama.com) (`brew install ollama`)
+- A pulled model (e.g., `ollama pull qwen2.5-coder:32b`)
 
 ---
 
@@ -259,6 +279,27 @@ Runs three models independently (spaced, not simultaneous - free tier requires i
 - **Unique** - only one model flagged this
 - **Disagreements** - models reached opposite conclusions
 
+### Local mode (Ollama)
+
+```
+/rival --local
+```
+
+Routes the review to a local Ollama model instead of OpenRouter. No API key needed, works offline, zero cost. Default model: `qwen2.5-coder:32b`.
+
+Override the local model:
+
+```
+/rival --local deepseek-r1:32b
+/rival --local llama3.1:70b
+```
+
+Local mode uses the same adversarial review prompt and produces the same output format. The only difference is where the inference runs.
+
+When to use local vs OpenRouter:
+- **Local**: offline work, privacy-sensitive code, OpenRouter rate-limited, quick first-pass
+- **OpenRouter**: larger models (120B+), panel mode with diverse families, production reviews
+
 ### Refresh model roster
 
 ```
@@ -283,12 +324,14 @@ Use this anywhere Claude Code accepts agent calls.
 
 Free-tier models on OpenRouter have rate limits (~20 req/min, ~200 req/day). rival handles this automatically:
 
-- **Discovery** health-checks models before adding them to the roster - rate-limited models don't make the cut
+- **Discovery** health-checks models before adding them to the roster, retries once on 429, and stops early once enough healthy models are found
+- **Minimum parameter filter** (7B+) excludes tiny models that waste rate limit budget on useless reviews
 - **Panel spacing** adds 10s between requests to avoid back-to-back 429s
 - **Retry logic** with 5 attempts, exponential backoff (5s base), and `Retry-After` header parsing
-- **Auto-fallback** if the cache runs out of models, falls back to a hardcoded default
+- **Model fallback** when a model exhausts all retries on 429, automatically falls back to the next ranked model in the discovery cache
+- **Graceful panel degradation** if fewer models are available than requested, panel size reduces automatically
 
-If you're hitting limits consistently, run `/rival --discover` to refresh - models that were congested earlier may have freed up.
+If you're hitting limits consistently, run `/rival --discover` to refresh - models that were congested earlier may have freed up. Or use `--local` to bypass OpenRouter entirely.
 
 ---
 
@@ -298,23 +341,27 @@ If you're hitting limits consistently, run `/rival --discover` to refresh - mode
 
 The discovery script:
 - Queries OpenRouter `/api/v1/models` for all free-tier models
-- Filters: must end in `:free`, context length >= 32k
+- Filters: must end in `:free`, context length >= 32k, parameter count >= 7B
 - Parses parameter count from model ID (e.g., "120b" -> 120)
 - Selects top 8 candidates with family diversity (prefers different model families)
-- Health-checks each with a "Say OK" ping (8s timeout, 2s spacing between pings)
+- Health-checks each with a "Say OK" ping (12s timeout, 8s spacing between pings)
+- Retries each ping once on 429 before marking as failed
+- Stops early once 3+ healthy models from 2+ families are found (preserves rate limit budget)
 - Writes survivors ranked by param count to `~/.rival/models.json`
 - Cache TTL: 24 hours (configurable in script)
 
 ### scripts/rival-companion.sh
 
-The companion script handles all OpenRouter communication:
+The companion script handles all OpenRouter and Ollama communication:
 - `--auto [N]` picks the Nth model from the discovery cache (default: 1)
 - `--delay N` waits N seconds before making the request (panel spacing)
 - `--model ID` overrides auto-selection with a specific model
+- `--local [MODEL]` routes to local Ollama (default: qwen2.5-coder:32b)
 - Auto-triggers discovery when cache is missing or stale
 - Sources `~/.zshrc` for env var inheritance in hook contexts
 - Uses stdin for curl body to avoid ARG_MAX limits on large inputs
 - Retries on 429/503 with exponential backoff and Retry-After header support
+- Falls back to next ranked model when retries are exhausted on 429
 
 ### agents/rival-rescue.md
 
@@ -352,6 +399,10 @@ A few things worth noting for anyone building OpenRouter-backed Claude Code plug
 6. **`set -e` and retry loops do not mix** - `set -e` causes the script to exit immediately on any non-zero exit code, which means a retry loop only retries on HTTP errors (where curl exits 0). Network failures kill the script before any retry condition is evaluated.
 7. **Not all free models are equal** - some (Nemotron, GPT-OSS) respond instantly while others (Qwen, Llama) are heavily congested. Discovery health-checks solve this by testing reality, not assumptions.
 8. **Family diversity matters for adversarial review** - three models from the same family (e.g., all Qwen variants) tend to have correlated blind spots. Mixing families (nvidia + openai + google) produces genuinely independent perspectives.
+9. **Tiny models waste rate limit budget** - a 1.2B model passing discovery health-checks means it occupies a cache slot that could have gone to a useful model. The 7B minimum parameter filter prevents this.
+10. **Discovery pings need breathing room** - 2s between health-check pings caused cascading 429s for later candidates. 8s spacing with a single retry per model catches models that were temporarily rate-limited without burning the budget on permanently congested ones.
+11. **Model fallback beats retry escalation** - retrying the same rate-limited model 5 times with exponential backoff wastes 30+ seconds. Falling back to the next ranked model after exhausting retries gets a response faster.
+12. **Local models are competitive for code review** - a 32B code-specialized local model (Qwen 2.5 Coder) produces comparable review quality to 120B general-purpose remote models for most code tasks. Domain specialization closes the parameter gap.
 
 ---
 
@@ -382,6 +433,7 @@ Ideas for future versions:
 - `--file` override to review a specific path rather than current context
 - Output as a structured JSON report for downstream tooling
 - Multi-provider support (Groq, Together AI as backup providers)
+- Local panel mode (chain multiple Ollama models for offline panel review)
 
 ---
 

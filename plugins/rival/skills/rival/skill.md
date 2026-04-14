@@ -67,7 +67,16 @@ To manually refresh the model roster: run `rival-discover.sh --force`
 1. `--auto 1`
 2. `--auto 2`
 
-If a model fails after retries, skip it and continue with remaining models.
+### Graceful degradation
+
+If the discovery cache has fewer models than the panel size requested:
+- 2 models cached + panel 3 requested: run as panel 2 (skip step 3, model 2 produces the consolidated summary)
+- 1 model cached + panel requested: run as single mode with that model
+- 0 models: fall back to companion default model in single mode
+
+Always tell the user when panel size was reduced: "Panel reduced to N models (only N available in cache)."
+
+If a model fails after retries, skip it and continue with remaining models. The companion script automatically falls back to the next ranked model on 429 exhaustion.
 
 ### Sequential execution flow:
 
@@ -204,12 +213,24 @@ Pass the `--model` flag through to the rival-rescue agent. Model override is for
 
 When no `--model` is specified in single mode, use `--auto` (picks the top-ranked model from discovery cache).
 
+## Local mode (--local)
+
+When the user passes `--local`, the adversarial review runs on local Ollama models instead of OpenRouter. Same review behavior, different compute backend.
+
+Pass `--local` through to the rival-rescue agent. The companion script handles the endpoint swap internally.
+
+Optional model override: `--local deepseek-r1:32b` (default: qwen2.5-coder:32b).
+
+This is useful for: offline work, zero-cost reviews, or when OpenRouter is rate-limited.
+
 ## Example usage
 
 ```
 /rival                              # single review with best available model
 /rival src/auth.ts                  # review specific file
 /rival --model deepseek/deepseek-r1:free  # use specific model
+/rival --local                      # review using local Ollama models
+/rival --local deepseek-r1:32b      # review using specific local model
 /rival --panel                      # 3-model sequential chain (recommended)
 /rival --panel 2                    # 2-model sequential chain
 /rival --panel-parallel             # 3-model independent review (spaced)
