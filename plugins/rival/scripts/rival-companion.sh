@@ -58,7 +58,7 @@ while [[ $# -gt 0 ]]; do
     --local)
       USE_LOCAL=true
       # Optional local model override: --local deepseek-r1:32b
-      # Model names contain ":" or "/" -- anything else is task text
+      # Model names contain ":" or "/" — anything else is task text
       if [[ $# -ge 2 && "$2" =~ [:\/] && ! "$2" =~ ^-- ]]; then
         LOCAL_MODEL="$2"
         shift 2
@@ -245,31 +245,13 @@ while true; do
       RETRY_DELAY=$((RETRY_DELAY * 2))
       continue
     fi
-
-    # All retries exhausted on this model -- try falling back to next ranked model
-    if [[ "$AUTO_RANK" -gt 0 && -f "$CACHE_FILE" ]]; then
-      next_rank=$((AUTO_RANK + 1))
-      fallback_model=$(jq -r ".models[$((next_rank - 1))].id // empty" "$CACHE_FILE" 2>/dev/null)
-      if [[ -n "$fallback_model" && "$fallback_model" != "$MODEL" ]]; then
-        echo "Model $MODEL exhausted retries. Falling back to #$next_rank: $fallback_model" >&2
-        MODEL="$fallback_model"
-        AUTO_RANK="$next_rank"
-        # Rebuild request body with new model
-        body=$(jq -n --arg model "$MODEL" --argjson messages "$messages" \
-          '{"model": $model, "messages": $messages, "max_tokens": 16384}')
-        attempt=0
-        RETRY_DELAY=5
-        sleep 3
-        continue
-      fi
-    fi
   fi
 
   break
 done
 
 if [[ "$http_code" -ne 200 ]]; then
-  echo "OpenRouter API error (HTTP $http_code) after $attempt attempt(s) on $MODEL:" >&2
+  echo "OpenRouter API error (HTTP $http_code) after $attempt attempt(s):" >&2
   echo "$response_body" | jq -r '.error.message // .error // .' 2>/dev/null >&2
   exit 1
 fi
