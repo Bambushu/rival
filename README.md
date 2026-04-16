@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <strong>Adversarial code review and task delegation - powered by free OpenRouter models or local Ollama.</strong><br>
-  One model reviews your code. Three models chain their findings. Zero cost.
+  <strong>Adversarial code review by models that think another AI wrote your code.</strong><br>
+  One model reviews. Three models chain their findings. All of them are in a bad mood. Zero cost.
 </p>
 
 <p align="center">
@@ -24,6 +24,8 @@
 Code review inside the same conversation context is not really review. Claude has all the surrounding context: the plan, the intent, the constraints you gave it. That shared context actively suppresses objections.
 
 **rival** routes your code to models that have none of that context. They see only the diff. They have no obligation to like it.
+
+But context isolation alone isn't enough. Models default to being polite. So rival does something else: it tells each reviewer that the code was written by *a different AI model*. This triggers a natural competitive stance - models are measurably more critical when they know they're reviewing another model's work. Add a "bad mood" framing and an explicit mandate to detect AI slop (over-abstraction, cargo-cult patterns, unnecessary error handling), and you get reviews that actually hurt.
 
 ## What it looks like
 
@@ -92,11 +94,13 @@ This is the hero feature. Here is what `--panel` actually produces:
 /rival --panel
 
   +-----------------------------------------------------------------------+
-  |  Model #1  .  Round 1 of 3  .  no prior context                       |
+  |  Model #1  .  Round 1 of 3  .  "a different AI wrote this"             |
   +-----------------------------------------------------------------------+
   |                                                                         |
   |  [BUG-1]  Missing argument validation - if $1 is empty, the script    |
   |           continues silently and writes garbage to the output file.    |
+  |           Classic AI slop: the model that wrote this assumed inputs    |
+  |           would always be valid.                                        |
   |                                                                         |
   |  [BUG-2]  No curl timeout flag. On a hung connection this blocks      |
   |           indefinitely with no feedback to the caller.                 |
@@ -109,7 +113,7 @@ This is the hero feature. Here is what `--panel` actually produces:
                     |  Findings passed to Model #2 (10s spacing)
                     v
   +-----------------------------------------------------------------------+
-  |  Model #2  .  Round 2 of 3  .  reading prior findings                  |
+  |  Model #2  .  Round 2 of 3  .  "the first reviewer was too soft"       |
   +-----------------------------------------------------------------------+
   |                                                                         |
   |  [CONFIRM]  BUG-1 confirmed. Agree this will silently corrupt output.  |
@@ -117,32 +121,38 @@ This is the hero feature. Here is what `--panel` actually produces:
   |  [CONFIRM]  BUG-2 confirmed. Add --max-time 30 at minimum.             |
   |                                                                         |
   |  [DISPUTE]  BUG-3: the dead code branch IS reachable - first model     |
-  |             missed that $FALLBACK_MODEL can be set externally via env. |
+  |             missed that $FALLBACK_MODEL can be set externally via env.  |
+  |             Sloppy analysis.                                            |
   |                                                                         |
   |  [NEW]      Critical: set -e at the top silently kills the retry       |
-  |             loop on any non-zero curl exit.                            |
+  |             loop on any non-zero curl exit. How did both the author    |
+  |             AND the first reviewer miss this?                          |
+  |                                                                         |
+  |  [SLOP]     The retry logic is cargo-cult: looks sophisticated but     |
+  |             can never fire because set -e exits first.                 |
   |                                                                         |
   +-----------------------------------------------------------------------+
                     |
                     |  All findings + dispute passed to Model #3 (10s spacing)
                     v
   +-----------------------------------------------------------------------+
-  |  Model #3  .  Round 3 of 3  .  resolving disputes                      |
+  |  Model #3  .  Round 3 of 3  .  "I trust nobody"                        |
   +-----------------------------------------------------------------------+
   |                                                                         |
   |  VERDICT on BUG-3 dispute: Model #2 is correct. The env-set path is   |
-  |  valid. Dead code finding should be withdrawn.                         |
+  |  valid. Model #1's analysis was incomplete.                            |
   |                                                                         |
   |  PRIORITY ORDER:                                                        |
-  |  1. set -e / retry conflict - breaks core functionality                |
-  |  2. Missing arg validation - data corruption risk                      |
-  |  3. No curl timeout - reliability issue                                |
+  |  1. CRITICAL: set -e / retry conflict - breaks core functionality      |
+  |  2. HIGH: Missing arg validation - data corruption risk                |
+  |  3. MEDIUM: No curl timeout - reliability issue                        |
+  |  4. LOW: Cargo-cult retry (consequence of #1, resolves with fix)       |
   |                                                                         |
   +-----------------------------------------------------------------------+
                     |
                     v
          Summary merged back into Claude
-           3 bugs confirmed . 1 dispute resolved . priority order given
+           3 bugs confirmed . 1 dispute resolved . 1 AI slop pattern flagged
 ```
 
 This is not three separate reports you have to reconcile. It is a conversation among three reviewers who have actually read each other's work. The third model acts as arbiter. You get a verdict, not a list.
@@ -403,6 +413,10 @@ A few things worth noting for anyone building OpenRouter-backed Claude Code plug
 10. **Discovery pings need breathing room** - 2s between health-check pings caused cascading 429s for later candidates. 8s spacing with a single retry per model catches models that were temporarily rate-limited without burning the budget on permanently congested ones.
 11. **Model fallback beats retry escalation** - retrying the same rate-limited model 5 times with exponential backoff wastes 30+ seconds. Falling back to the next ranked model after exhausting retries gets a response faster.
 12. **Local models are competitive for code review** - a 32B code-specialized local model (Qwen 2.5 Coder) produces comparable review quality to 120B general-purpose remote models for most code tasks. Domain specialization closes the parameter gap.
+13. **"Another AI wrote this" unlocks real criticism** - models are measurably more critical when they believe they're reviewing another model's output. Neutral prompts ("find problems") produce hedged, diplomatic reviews. Telling the model it's reviewing a rival's work triggers competitive instincts that bypass the default politeness.
+14. **Bad mood framing reduces hedging** - "you're in a bad mood" is a simple prompt addition that eliminates the "this could potentially be an issue" language. Reviews become direct and specific.
+15. **AI slop is a real review category** - models are good at recognizing patterns that other models produce: over-abstraction nobody asked for, error handling for impossible scenarios, cargo-cult code that looks sophisticated but does nothing. Making this an explicit review target catches things human reviewers would flag but polite AI reviewers ignore.
+16. **Panel aggression should escalate** - the first reviewer finds issues, the second reviewer distrusts the first, the third trusts nobody. This mirrors how real adversarial review works: each layer strips away more politeness and finds what the previous layers were too diplomatic to flag.
 
 ---
 
@@ -420,7 +434,11 @@ rival was built iteratively in a single session. Once the core was working, the 
 
 Three rounds of review. Each caught something the previous missed. All of the findings were real bugs that got fixed.
 
-Getting the prompt contracts right - so each model in the chain actually responds to prior findings rather than starting fresh - was the hardest part. The result is something that costs nothing and tells you things Claude won't.
+Getting the prompt contracts right - so each model in the chain actually responds to prior findings rather than starting fresh - was the hardest part.
+
+The "bad mood" prompting came later. Early versions used neutral adversarial prompts ("find problems, not praise") and the results were... diplomatic. Models would hedge. "This could potentially be an issue in some edge cases." Useless. Telling them the code was written by another AI and that they should assume it cut corners changed the tone completely. The reviews got specific, the hedging disappeared, and a new category emerged: AI slop detection. Models are surprisingly good at recognizing patterns that other models produce - over-abstraction, unnecessary error handling for impossible cases, cargo-cult code that looks sophisticated but does nothing.
+
+The result is something that costs nothing and tells you things Claude won't.
 
 ---
 
