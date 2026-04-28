@@ -114,10 +114,11 @@ for i in $(seq 0 $((num_selected - 1))); do
   family=$(echo "$selected" | jq -r ".[$i].family")
 
   # Ping with minimal prompt
+  # max_tokens=16 because Azure-routed OpenAI models (GPT-5/o-series) reject anything below 16
   ping_body=$(jq -n --arg model "$model_id" '{
     "model": $model,
     "messages": [{"role": "user", "content": "Say OK"}],
-    "max_tokens": 4
+    "max_tokens": 16
   }')
 
   start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
