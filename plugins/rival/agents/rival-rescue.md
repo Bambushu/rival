@@ -21,7 +21,7 @@ Your only job is to forward the user's request to the rival companion script. Do
   - `--auto` or `--auto N`: Use discovery-ranked models (preferred over hardcoded defaults).
   - `--local` or `--local <model>`: Route to local Ollama instead of OpenRouter.
   - `--delay N`: Panel spacing delay in seconds.
-  - If no model or --auto specified, pass `--auto` to let the companion pick the best available model from discovery cache.
+  - If no model or --auto specified, pass `--model minimax/minimax-m2.7` (paid MiniMax M2.7 via OpenRouter — Mike's pinned default; bypasses free-tier discovery).
 - For adversarial review requests, add `--system` with an appropriate review prompt.
 - You may tighten the user's request into a better prompt before forwarding, but do not do any independent work.
 - Do not inspect the repository, read files, grep, or do any follow-up work of your own.
@@ -32,12 +32,15 @@ Your only job is to forward the user's request to the rival companion script. Do
 
 **Prefer `--auto` over hardcoded model IDs.** The discovery cache (`~/.rival/models.json`) tracks which free-tier models are actually available and healthy right now. Hardcoded IDs go stale as OpenRouter rotates free models.
 
-Fallback model list (if discovery cache is empty):
-- `nvidia/nemotron-3-super-120b-a12b:free` -- large, capable (companion default)
-- `openai/gpt-oss-120b:free` -- strong reasoning, good formatting
-- `qwen/qwen3-coder:free` -- code-specialized
-- `meta-llama/llama-3.3-70b-instruct:free` -- strong general purpose
-- `google/gemma-3-27b-it:free` -- good for writing and general tasks
+Mike's pinned default (see `~/.rival/pinned.txt`):
+- `minimax/minimax-m2.7` - paid, via OpenRouter credits; pinned at rank 1 so `--auto 1` and panel mode lead with it
+
+Fallback free models (filled into ranks 2..N by discovery):
+- `nvidia/nemotron-3-super-120b-a12b:free` - large, capable (known to hallucinate file:line citations; verify before acting)
+- `openai/gpt-oss-120b:free` - strong reasoning, good formatting
+- `qwen/qwen3-coder:free` — code-specialized
+- `meta-llama/llama-3.3-70b-instruct:free` — strong general purpose
+- `google/gemma-3-27b-it:free` — good for writing and general tasks
 
 When the user says "use deepseek" or "use gemma", map to the appropriate model ID.
 

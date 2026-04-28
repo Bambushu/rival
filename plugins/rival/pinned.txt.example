@@ -1,0 +1,18 @@
+# Rival pinned models — one OpenRouter model ID per line.
+# These bypass the :free filter and always rank first (in file order) in ~/.rival/models.json.
+# Lines starting with # are comments. Blank lines ignored.
+#
+# Discovery still enforces MIN_CONTEXT and runs a health-check ping against each.
+# If a pinned model fails resolution or health-check, discovery logs a warning and continues.
+#
+# To enable: copy this file to ~/.rival/pinned.txt and uncomment / edit the lines you want.
+#   mkdir -p ~/.rival && cp pinned.txt.example ~/.rival/pinned.txt
+#
+# Recommended elite tri-corpus chain for sequential `--panel` (max training-corpus diversity):
+#   Slot 1: wide first-pass caster
+#   Slot 2: code+reasoning validator from a different family
+#   Slot 3: code-tuned final judge from a third family
+#
+# x-ai/grok-4.1-fast
+# deepseek/deepseek-v4-pro
+# openai/gpt-5.1-codex

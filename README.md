@@ -84,6 +84,18 @@ The free-tier landscape changes, but as of writing the discovery process usually
 
 You never need to think about this. rival picks the best available models automatically.
 
+### Pinning paid models (optional)
+
+If you have OpenRouter credits and want to lead with specific paid models — for example a tri-corpus chain (xAI + DeepSeek + OpenAI) for maximum training-diversity — drop their IDs into `~/.rival/pinned.txt`, one per line. Pinned models bypass the `:free` filter, are health-checked, and always rank first in pin-file order.
+
+```
+mkdir -p ~/.rival
+cp ~/.claude/plugins/cache/bambushu-rival/rival/*/pinned.txt.example ~/.rival/pinned.txt
+$EDITOR ~/.rival/pinned.txt
+```
+
+`--auto 1` and the lead slot of `--panel` will then use your first pin. If `pinned.txt` is missing or empty, rival behaves exactly as before — free-tier discovery only.
+
 ---
 
 ## The chain in practice
