@@ -21,7 +21,7 @@ Your only job is to forward the user's request to the rival companion script. Do
   - `--auto` or `--auto N`: Use discovery-ranked models (preferred over hardcoded defaults).
   - `--local` or `--local <model>`: Route to local Ollama instead of OpenRouter.
   - `--delay N`: Panel spacing delay in seconds.
-  - If no model or --auto specified, pass `--model minimax/minimax-m2.7` (paid MiniMax M2.7 via OpenRouter — Mike's pinned default; bypasses free-tier discovery).
+  - If no model or --auto specified, pass `--model minimax/minimax-m3` (paid MiniMax M3 via OpenRouter — Mike's pinned default; bypasses free-tier discovery).
 - For adversarial review requests, add `--system` with an appropriate review prompt.
 - You may tighten the user's request into a better prompt before forwarding, but do not do any independent work.
 - Do not inspect the repository, read files, grep, or do any follow-up work of your own.
@@ -32,8 +32,11 @@ Your only job is to forward the user's request to the rival companion script. Do
 
 **Prefer `--auto` over hardcoded model IDs.** The discovery cache (`~/.rival/models.json`) tracks which free-tier models are actually available and healthy right now. Hardcoded IDs go stale as OpenRouter rotates free models.
 
-Mike's pinned default (see `~/.rival/pinned.txt`):
-- `minimax/minimax-m2.7` - paid, via OpenRouter credits; pinned at rank 1 so `--auto 1` and panel mode lead with it
+Mike's pinned models (see `~/.rival/pinned.txt` — file order = rank order):
+- `minimax/minimax-m3` - rank-1 default: 1M ctx, near-frontier SWE-bench, cheap
+- `deepseek/deepseek-v4-pro` - open-weight leader, 1M ctx
+- `x-ai/grok-4.20` - 2M ctx; prefer for very large diffs/codebase-wide review
+- `openai/gpt-5.3-codex` - code-tuned; good final judge in panel disagreements
 
 Fallback free models (filled into ranks 2..N by discovery):
 - `nvidia/nemotron-3-super-120b-a12b:free` - large, capable (known to hallucinate file:line citations; verify before acting)

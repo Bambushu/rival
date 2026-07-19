@@ -26,6 +26,13 @@ FORCE=false
 command -v jq >/dev/null 2>&1 || { echo "Error: jq is required but not installed" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not installed" >&2; exit 1; }
 
+# Prefer Mike's personal key for rival (Joey's adsmith key stays the machine default)
+if [[ -n "${MIKE_OPENROUTER_API_KEY:-}" ]]; then
+  OPENROUTER_API_KEY="$MIKE_OPENROUTER_API_KEY"
+elif [[ -f "$HOME/.zshrc" ]]; then
+  mike_key=$(sed -n 's/.*MIKE_OPENROUTER_API_KEY="\([^"]*\)".*/\1/p' "$HOME/.zshrc" | head -1)
+  [[ -n "$mike_key" ]] && OPENROUTER_API_KEY="$mike_key"
+fi
 # Source API key
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   OPENROUTER_API_KEY=$(bash -lc 'echo "$OPENROUTER_API_KEY"' 2>/dev/null) || true
@@ -214,9 +221,11 @@ for i in $(seq 0 $((num_selected - 1))); do
   fi
 
   # Early exit: if we have enough healthy models from diverse families, stop burning rate limit
+  # — but never before every pinned candidate (indices 0..num_pinned_resolved-1) has been checked,
+  # otherwise a 4th+ pin would be silently dropped from the roster.
   num_healthy_so_far=$(echo "$healthy" | jq 'length')
   healthy_families=$(echo "$healthy" | jq '[.[].family] | unique | length')
-  if [[ "$num_healthy_so_far" -ge "$MIN_HEALTHY" && "$healthy_families" -ge 2 ]]; then
+  if [[ $((i + 1)) -ge "$num_pinned_resolved" && "$num_healthy_so_far" -ge "$MIN_HEALTHY" && "$healthy_families" -ge 2 ]]; then
     echo "  Reached $num_healthy_so_far healthy models from $healthy_families families — stopping early." >&2
     break
   fi

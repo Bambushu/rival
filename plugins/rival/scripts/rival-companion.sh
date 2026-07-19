@@ -4,12 +4,19 @@ set -uo pipefail
 
 # rival-companion.sh — OpenRouter API wrapper for the rival plugin
 # Usage: rival-companion.sh [--model MODEL] [--system SYSTEM_PROMPT] TASK_TEXT
-# Default model: nvidia/nemotron-3-super-120b-a12b:free
+# Default model: minimax/minimax-m3 (Mike's rank-1 pin; see ~/.rival/pinned.txt)
 
 # Check dependencies
 command -v jq >/dev/null 2>&1 || { echo "Error: jq is required but not installed" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not installed" >&2; exit 1; }
 
+# Prefer Mike's personal key for rival (Joey's adsmith key stays the machine default)
+if [[ -n "${MIKE_OPENROUTER_API_KEY:-}" ]]; then
+  OPENROUTER_API_KEY="$MIKE_OPENROUTER_API_KEY"
+elif [[ -f "$HOME/.zshrc" ]]; then
+  mike_key=$(sed -n 's/.*MIKE_OPENROUTER_API_KEY="\([^"]*\)".*/\1/p' "$HOME/.zshrc" | head -1)
+  [[ -n "$mike_key" ]] && OPENROUTER_API_KEY="$mike_key"
+fi
 # Source env if key not already set (fixes subagent inheritance)
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   # Try login shell
@@ -25,7 +32,7 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   done
 fi
 
-MODEL="minimax/minimax-m2.7"
+MODEL="minimax/minimax-m3"
 SYSTEM_PROMPT=""
 TASK_TEXT=""
 MAX_RETRIES=5
@@ -205,7 +212,7 @@ attempt=0
 while true; do
   attempt=$((attempt + 1))
 
-  response=$(curl -s --connect-timeout 10 --max-time 120 \
+  response=$(curl -s --connect-timeout 10 --max-time 300 \
     -D "$header_file" -w "\n%{http_code}" \
     -X POST "https://openrouter.ai/api/v1/chat/completions" \
     -H "Authorization: Bearer ${OPENROUTER_API_KEY}" \
