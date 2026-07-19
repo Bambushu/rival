@@ -30,7 +30,7 @@ command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not insta
 if [[ -n "${MIKE_OPENROUTER_API_KEY:-}" ]]; then
   OPENROUTER_API_KEY="$MIKE_OPENROUTER_API_KEY"
 elif [[ -f "$HOME/.zshrc" ]]; then
-  mike_key=$(sed -n 's/.*MIKE_OPENROUTER_API_KEY="\([^"]*\)".*/\1/p' "$HOME/.zshrc" | head -1)
+  mike_key=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}MIKE_OPENROUTER_API_KEY="\([^"]*\)".*/\2/p' "$HOME/.zshrc" | tail -1)
   [[ -n "$mike_key" ]] && OPENROUTER_API_KEY="$mike_key"
 fi
 # Source API key
