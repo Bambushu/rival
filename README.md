@@ -94,6 +94,20 @@ cp ~/.claude/plugins/cache/bambushu-rival/rival/*/pinned.txt.example ~/.rival/pi
 $EDITOR ~/.rival/pinned.txt
 ```
 
+#### Current tested roster (2026-07)
+
+Five families, all health-checked and validated against a seeded-bug review test:
+
+| Rank | Model | Role |
+|------|-------|------|
+| #1 | `minimax/minimax-m3` | Fast default — caught 7/7 seeded bugs in 16s |
+| #2 | `moonshotai/kimi-k3` | Deep second opinion — 6/7 seeds plus the best unseeded catch (cross-device `os.rename`), ~11x slower |
+| #3 | `deepseek/deepseek-v4-pro` | Third corpus, strong on systems code |
+| #4 | `x-ai/grok-4.20` | Fourth family, fastest ping |
+| #5 | `openai/gpt-5.3-codex` | Code-specialized closer |
+
+`--panel-parallel` fans out across all five; family-diverse blind spots mean the panel beats any single member.
+
 `--auto 1` and the lead slot of `--panel` will then use your first pin. If `pinned.txt` is missing or empty, rival behaves exactly as before — free-tier discovery only.
 
 ---
@@ -428,6 +442,8 @@ A few things worth noting for anyone building OpenRouter-backed Claude Code plug
 13. **"Another AI wrote this" unlocks real criticism** - models are measurably more critical when they believe they're reviewing another model's output. Neutral prompts ("find problems") produce hedged, diplomatic reviews. Telling the model it's reviewing a rival's work triggers competitive instincts that bypass the default politeness.
 14. **Bad mood framing reduces hedging** - "you're in a bad mood" is a simple prompt addition that eliminates the "this could potentially be an issue" language. Reviews become direct and specific.
 15. **AI slop is a real review category** - models are good at recognizing patterns that other models produce: over-abstraction nobody asked for, error handling for impossible scenarios, cargo-cult code that looks sophisticated but does nothing. Making this an explicit review target catches things human reviewers would flag but polite AI reviewers ignore.
+16. **Benchmarks don't predict review quality** - kimi-k3 outscores minimax-m3 on SWE-bench, yet in a seeded-bug test it missed a seed minimax caught, while finding one minimax missed - at 11x the latency (178s vs 16s). Panels exist because blind spots are complementary, not ranked.
+17. **Empirical seeding beats vibes for model selection** - plant known bugs in a fixture file and score each candidate's review against them. Ten minutes of testing revealed roster truths no leaderboard shows.
 16. **Panel aggression should escalate** - the first reviewer finds issues, the second reviewer distrusts the first, the third trusts nobody. This mirrors how real adversarial review works: each layer strips away more politeness and finds what the previous layers were too diplomatic to flag.
 
 ---
