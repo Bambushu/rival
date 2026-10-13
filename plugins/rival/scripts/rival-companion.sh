@@ -10,7 +10,7 @@ set -uo pipefail
 command -v jq >/dev/null 2>&1 || { echo "Error: jq is required but not installed" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not installed" >&2; exit 1; }
 
-# Prefer Mike's personal key for rival (Joey's adsmith key stays the machine default)
+# Prefer MIKE_OPENROUTER_API_KEY when set (OPENROUTER_API_KEY may belong to another account)
 if [[ -n "${MIKE_OPENROUTER_API_KEY:-}" ]]; then
   OPENROUTER_API_KEY="$MIKE_OPENROUTER_API_KEY"
 elif [[ -f "$HOME/.zshrc" ]]; then
